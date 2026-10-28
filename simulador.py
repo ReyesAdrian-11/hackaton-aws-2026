@@ -214,11 +214,35 @@ class Simulador:
                 continue
             distancia = self.distancia_saltos(zombie.nodo, survivor.nodo, limite=3)
             if distancia is not None and distancia <= 3:
+                # Target the survivor's likely next node when a direction of
+                # travel is observable, instead of chasing a stale position.
                 candidatos.append((distancia, survivor.id))
         if not candidatos:
             return None
         candidatos.sort()
-        return self.mundo.sobrevivientes[candidatos[0][1]].nodo
+        survivor = self.mundo.sobrevivientes[candidatos[0][1]]
+        return self._predecir_siguiente_superviviente(survivor)
+
+    def _predecir_siguiente_superviviente(self, survivor: Sobreviviente) -> str:
+        """Predict one survivor step from its last direction and refuge route."""
+        if survivor.nodo_anterior is None or survivor.nodo_anterior == survivor.nodo:
+            return survivor.nodo
+        options = [
+            node
+            for node in self.vecinos_disponibles(survivor.nodo)
+            if node != survivor.nodo_anterior
+        ]
+        if not options:
+            return survivor.nodo
+        refuge = self.mundo.refugios.get(survivor.refugio)
+        if refuge is None:
+            return sorted(options)[0]
+        ranked = [
+            (self.distancia_saltos(node, refuge.nodo), node)
+            for node in options
+        ]
+        reachable = [item for item in ranked if item[0] is not None]
+        return min(reachable)[1] if reachable else sorted(options)[0]
 
     def _siguiente_hacia(self, origen: str, destino: str) -> str | None:
         """Primer paso mediante BFS limitado; los corredores solo detectan 3 saltos."""

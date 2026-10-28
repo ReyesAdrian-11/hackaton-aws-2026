@@ -42,3 +42,14 @@ def test_safe_route_tree_returns_complete_route_around_zombie_and_blocked_edge()
         "N-0004",
         "N-0002",
     ]
+
+
+def test_route_weight_uses_street_speed_not_only_distance():
+    graph = nx.MultiDiGraph()
+    graph.add_edge("N-0000", "N-0001", length=5, highway="primary")
+    graph.add_edge("N-0001", "N-0003", length=5, highway="primary")
+    graph.add_edge("N-0000", "N-0002", length=20, highway="residential")
+    graph.add_edge("N-0002", "N-0003", length=20, highway="residential")
+
+    # The primary route is longer in meters but faster in travel time.
+    assert next_safe_node(graph, "N-0000", "N-0003", [], []) == "N-0001"

@@ -76,5 +76,17 @@ class RondaInicioRequest(BaseModel):
     ronda: int = Field(default=1, ge=1, le=3)
 
 
+class IncidenteRequest(BaseModel):
+    arista: list[str] = Field(min_length=2, max_length=2)
+    nombre: str = Field(min_length=1, max_length=120)
+
+
+class IncidenteResponse(BaseModel):
+    estado: Literal["programado"]
+    turno: int
+    arista: list[str]
+    mensaje: str
+
+
 class EstadoCargaRequest(EstadoMundo):
     """Modelo usado solo para pruebas locales del motor."""

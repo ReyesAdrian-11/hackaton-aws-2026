@@ -18,6 +18,8 @@ from models import (
     EstadoCargaRequest,
     EstadoMundo,
     EventoSimulacion,
+    IncidenteRequest,
+    IncidenteResponse,
     PasoRequest,
     PasoResponse,
     Refugio,
@@ -147,13 +149,24 @@ def require_edge(edge: list[str]) -> None:
         raise HTTPException(status_code=422, detail=f"La arista {edge} no existe en el grafo.")
 
 
-def survivor_target(survivor_id: str, world: EstadoMundo) -> Refugio | None:
+def survivor_target(
+    survivor_id: str,
+    world: EstadoMundo,
+    reserved_capacity: dict[str, int] | None = None,
+) -> Refugio | None:
+    """Choose a reachable refuge while respecting already planned arrivals."""
+    reserved_capacity = reserved_capacity if reserved_capacity is not None else {}
+
+    def has_capacity(refuge: Refugio) -> bool:
+        remaining = refuge.capacidad - refuge.ocupados
+        return reserved_capacity.get(refuge.id, 0) < remaining
+
     survivor = next((s for s in world.sobrevivientes if s.id == survivor_id), None)
     if survivor and survivor.refugio:
         refuge = next((r for r in world.refugios if r.id == survivor.refugio), None)
-        if refuge and refuge.ocupados < refuge.capacidad:
+        if refuge and has_capacity(refuge):
             return refuge
-    available = [r for r in world.refugios if r.ocupados < r.capacidad]
+    available = [r for r in world.refugios if has_capacity(r)]
     if not survivor or not available:
         return None
 
@@ -176,16 +189,18 @@ def prepare_decisions(world: EstadoMundo) -> None:
     new_targets: dict[tuple[int, str], str] = {}
     graph = graphs.game_graph()
     route_trees: dict[str, dict[str, str]] = {}
+    reserved_capacity = {refuge.id: 0 for refuge in world.refugios}
     for survivor in world.sobrevivientes:
         if not survivor.activo:
             continue
-        refuge = survivor_target(survivor.id, world)
+        refuge = survivor_target(survivor.id, world, reserved_capacity)
         if refuge is None:
             new_decisions[(world.turno, survivor.id)] = survivor.nodo
             new_routes[(world.turno, survivor.id)] = [survivor.nodo]
             continue
         target = refuge.nodo
         new_targets[(world.turno, survivor.id)] = refuge.id
+        reserved_capacity[refuge.id] += 1
         if target not in route_trees:
             route_trees[target] = safe_route_tree(
                 graph,
@@ -326,6 +341,28 @@ async def start_fire_test():
         turno=int(result["turno"]),
         estado=result["estado"],
         mensaje="La Prueba de Fuego R1 → R2 → R3 se está preparando.",
+    )
+
+
+@app.post("/simulacion/incidente", response_model=IncidenteResponse)
+async def inject_incident(
+    request: IncidenteRequest,
+    x_api_key: str | None = Header(default=None, alias="x-api-key"),
+):
+    """Schedule a real road closure for the current simulation tick."""
+    require_key(x_api_key)
+    require_edge(request.arista)
+    edge = tuple(request.arista)
+    if frozenset(edge) in store.get_blocked_edges():
+        raise HTTPException(status_code=409, detail="La arista ya está bloqueada.")
+    turno = simulation_service.inject_block(edge, request.nombre)
+    if turno is None:
+        raise HTTPException(status_code=409, detail="No hay una simulación activa.")
+    return IncidenteResponse(
+        estado="programado",
+        turno=turno,
+        arista=request.arista,
+        mensaje=f"Incidente programado para el turno {turno}; las rutas se recalcularán al publicarse el tick.",
     )
 
 

@@ -49,6 +49,8 @@ class SimulationService:
         self._task: asyncio.Task[None] | None = None
         self._round: int | None = None
         self._start_lock = asyncio.Lock()
+        self._active_simulator: Simulador | None = None
+        self._pending_events: list[Evento] = []
 
     @property
     def running(self) -> bool:
@@ -57,6 +59,22 @@ class SimulationService:
     @property
     def round_number(self) -> int | None:
         return self._round
+
+    def inject_block(self, arista: tuple[str, str], nombre: str) -> int | None:
+        """Queue a real-time closure for the currently executing tick."""
+        simulator = self._active_simulator
+        if simulator is None or not self.running:
+            return None
+        # The current tick may already be inside the zombie/survivor phase;
+        # schedule the incident for the next atomic tick so it cannot be lost.
+        turno = simulator.mundo.turno + 1
+        self._pending_events.append(Evento(turno, "bloqueo", arista, nombre))
+        return turno
+
+    def _take_pending_events(self) -> list[Evento]:
+        pending = self._pending_events
+        self._pending_events = []
+        return pending
 
     async def start_demo(
         self,
@@ -112,6 +130,7 @@ class SimulationService:
                     )
 
             self._round = round_number
+            self._pending_events.clear()
             self._task = asyncio.create_task(
                 self._run_round(simulator, valid_events, api),
                 name=f"spookython-demo-round-{round_number}",
@@ -177,7 +196,9 @@ class SimulationService:
                     )
                 )
                 self._round = round_number
+                self._active_simulator = simulator
                 await self._run_round(simulator, events, api, exact_duration=True)
+                self._active_simulator = None
         except asyncio.CancelledError:
             raise
         except Exception:
@@ -201,6 +222,7 @@ class SimulationService:
         api: Any,
         exact_duration: bool = False,
     ) -> None:
+        self._active_simulator = simulator
         transport = httpx.ASGITransport(app=api)
         limits = httpx.Limits(max_connections=250, max_keepalive_connections=250)
         async with httpx.AsyncClient(
@@ -221,7 +243,8 @@ class SimulationService:
                     ):
                         break
                     started = time.perf_counter()
-                    await simulator.ejecutar_turno(events, client)
+                    live_events = [*events, *self._take_pending_events()]
+                    await simulator.ejecutar_turno(live_events, client)
                     elapsed = time.perf_counter() - started
                     await asyncio.sleep(max(0, TURN_INTERVAL_SECONDS - elapsed))
 
@@ -239,3 +262,6 @@ class SimulationService:
                 logger.exception("Falló la Ronda %d de demostración.", simulator.ronda)
                 current = store.get()
                 store.replace(current.model_copy(update={"simulacion": "error"}))
+            finally:
+                if self._active_simulator is simulator:
+                    self._active_simulator = None
