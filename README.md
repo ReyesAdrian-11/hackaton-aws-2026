@@ -88,4 +88,3 @@ Ejecuta `npm` dentro de `frontend/`; el `package.json` no está en la raíz.
 - [Diagrama de arquitectura](docs/arquitectura.md)
 - [Declaración de costos](docs/costos.md)
 
-La captura real del AWS Budget debe agregarse manualmente en `docs/budget.png` después de configurar la alerta en la cuenta de AWS. Las URLs públicas del frontend y backend deben completarse antes de la entrega final.
