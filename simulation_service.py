@@ -32,7 +32,7 @@ class RoundConfig:
 
 ROUND_CONFIGS = {
     1: RoundConfig(survivors=20, walkers=10),
-    2: RoundConfig(survivors=80, walkers=30, runners=15, hordes=5, event_turns=(40,)),
+    2: RoundConfig(survivors=80, walkers=25, runners=15, hordes=5, event_turns=(40,)),
     3: RoundConfig(
         survivors=200,
         walkers=40,
@@ -175,10 +175,11 @@ class SimulationService:
                 if previous_refugios:
                     simulator.mundo.refugios = {
                         refuge.id: Refugio(
-                            refuge.id,
-                            refuge.nodo,
-                            refuge.capacidad,
-                            refuge.ocupados,
+                            id=refuge.id,
+                            nodo=refuge.nodo,
+                            nombre=refuge.nombre,
+                            capacidad=refuge.capacidad,
+                            ocupados=refuge.ocupados,
                         )
                         for refuge in previous_refugios
                     }

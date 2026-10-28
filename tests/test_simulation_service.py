@@ -68,7 +68,7 @@ def test_round_configs_match_the_challenge():
     assert ROUND_CONFIGS[1].event_turns == ()
 
     assert ROUND_CONFIGS[2].survivors == 80
-    assert (ROUND_CONFIGS[2].walkers, ROUND_CONFIGS[2].runners, ROUND_CONFIGS[2].hordes, ROUND_CONFIGS[2].sleepers) == (30, 15, 5, 0)
+    assert (ROUND_CONFIGS[2].walkers, ROUND_CONFIGS[2].runners, ROUND_CONFIGS[2].hordes, ROUND_CONFIGS[2].sleepers) == (25, 15, 5, 0)
     assert len(ROUND_CONFIGS[2].event_turns) == 1
 
     assert ROUND_CONFIGS[3].survivors == 200
@@ -141,7 +141,7 @@ def test_round_start_uses_matching_population_and_city_events(monkeypatch):
     assert len(captured) == 3
     expected = {
         1: (20, 10, 0, 0, 0, []),
-        2: (80, 30, 15, 5, 0, [40]),
+        2: (80, 25, 15, 5, 0, [40]),
         3: (200, 40, 25, 5, 10, [85, 110]),
     }
     for round_number, args, uses_zones, round_events in captured:

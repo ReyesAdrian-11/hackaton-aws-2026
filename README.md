@@ -150,13 +150,20 @@ Debe responder un JSON con `status: ok`. Luego abre la URL de Amplify y pulsa
 el botón de demo; el navegador debe solicitar directamente
 `https://TU_BACKEND_PUBLICO/simulacion/demo`.
 
+### Adaptador Lambda opcional
+
+`lambda_handler.py` contiene un adaptador Mangum aislado para probar requests
+HTTP cortas mediante Lambda. No reemplaza el proceso principal en EC2 y no
+ejecuta `SimulationService`; la demostración continúa usando FastAPI en EC2
+con `WorldStore` en memoria. El archivo no afecta el arranque normal con
+Uvicorn y solo se usa si posteriormente se configura API Gateway para Lambda.
+
 ## Decisiones de diseño
 
 - FastAPI concentra los contratos HTTP y `SimulationService` controla una sola
   sesión de simulación para evitar carreras entre rondas.
 - `WorldStore` mantiene un snapshot en memoria y publica el estado por REST y
-  WebSocket. Esto mantiene `/paso` rápido y permite recalcular después de cada
-  tick.
+  WebSocket durante la sesión única de EC2.
 - NetworkX usa Dijkstra con pesos de tiempo: la longitud de la arista se
   divide por la velocidad configurada para su tipo de calle. Los bloqueos y
   zombis visibles se excluyen de la ruta.
@@ -164,15 +171,14 @@ el botón de demo; el navegador debe solicitar directamente
   tick atómico y producen eventos de bloqueo y desvío observables.
 - La capacidad de los refugios se reserva durante la planificación para evitar
   que varios sobrevivientes reciban simultáneamente el último cupo.
-- La simulación usa memoria local porque la prueba de fuego corre como una
-  sesión única. Una versión multiinstancia debe reemplazar `WorldStore` por
-  Redis/ElastiCache o una persistencia compartida.
+- La arquitectura actual está diseñada para una sola instancia EC2 durante la
+  demostración.
 
 ## Limitaciones conocidas
 
 - El archivo vial actual contiene aproximadamente 6.769 nodos y 18.207 aristas;
   es más detallado que el escenario reducido de unas 300 intersecciones.
-- El estado se pierde al reiniciar el proceso y el WebSocket actual mantiene
+- El estado se pierde al reiniciar el proceso y el WebSocket mantiene
   conexiones dentro de una sola instancia.
 - AWS Budget, HTTPS, Nginx y CloudWatch requieren configuración en la cuenta;
   el repositorio no contiene credenciales ni crea recursos automáticamente.

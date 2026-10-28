@@ -587,6 +587,7 @@ function EmergencyBoard({ onExit }: { onExit: () => void }) {
               <span><i className="legend-dot legend-walker" />Caminantes</span>
               <span><i className="legend-dot legend-runner" />Corredores</span>
               <span><i className="legend-dot legend-horde" />Hordas</span>
+              <span><i className="legend-dot legend-sleeper" />Dormidos</span>
               <span><i className="legend-dot legend-refuge" />Refugios</span>
             </div>
           </section>
@@ -608,11 +609,15 @@ export default function App() {
   const enterDemo = async () => {
     setStarting(true)
     setStartError(null)
+    // Mount the observatory immediately. The API starts the simulation in
+    // parallel while the map and first state snapshot load in the background.
+    const startRequest = startDemo(1)
+    setInDemo(true)
     try {
-      const result = await startDemo(1)
+      const result = await startRequest
       if (result.estado === 'error') throw new Error(result.mensaje)
-      setInDemo(true)
     } catch (error) {
+      setInDemo(false)
       setStartError(errorMessage(error))
     } finally {
       setStarting(false)

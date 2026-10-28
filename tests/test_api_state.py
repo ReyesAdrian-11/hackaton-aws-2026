@@ -122,6 +122,32 @@ def test_prepare_decisions_reserves_refuge_capacity(monkeypatch):
     assert main._targets[(3, "S-2")] == "R-002"
 
 
+def test_prepare_decisions_reassigns_unreachable_assigned_refuge(monkeypatch):
+    graph = nx.MultiDiGraph()
+    graph.add_edge("N-0000", "N-0001", length=1)
+    graph.add_edge("N-0001", "N-0002", length=1)
+
+    class StaticGraphManager:
+        def game_graph(self):
+            return graph
+
+    world = EstadoMundo(
+        turno=4,
+        sobrevivientes=[Sobreviviente(id="S-1", nodo="N-0000", refugio="R-001")],
+        refugios=[
+            # R-001 is not reachable from N-0000 in the directed graph.
+            Refugio(id="R-001", nodo="N-0003", capacidad=5, ocupados=0),
+            Refugio(id="R-002", nodo="N-0002", capacidad=5, ocupados=0),
+        ],
+    )
+    monkeypatch.setattr("main.graphs", StaticGraphManager())
+
+    main.prepare_decisions(world)
+
+    assert main._targets[(4, "S-1")] == "R-002"
+    assert main._decisions[(4, "S-1")] == "N-0001"
+
+
 def test_start_demo_resets_completed_world_and_route_cache(monkeypatch):
     class MutableStore:
         def __init__(self):

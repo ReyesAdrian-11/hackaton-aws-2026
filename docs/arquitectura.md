@@ -13,7 +13,8 @@ Fuente editable: [arquitectura.mmd](arquitectura.mmd)
 - **FastAPI:** expone `/paso`, `/pasos`, `/estado`, `/mapa` y las rutas de simulación.
 - **NetworkX:** calcula rutas usando el grafo GraphML de Manta.
 - **SimulationService:** ejecuta las rondas y publica el estado.
-- **WorldStore:** mantiene temporalmente el estado de la partida en memoria.
+- **WorldStore:** mantiene temporalmente el estado de la partida en memoria de
+  la instancia EC2.
 - **OpenStreetMap/OSMnx:** fuente del grafo vial.
 - **CloudWatch:** monitoreo y logs pendientes de configurar completamente.
 - **AWS Budget:** control y alerta de costos.

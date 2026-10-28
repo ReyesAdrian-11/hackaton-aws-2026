@@ -129,7 +129,6 @@ function AnimatedActorMarker({
     [positionKey],
   )
   const [toLat, toLng] = points.at(-1) ?? [0, 0]
-
   useEffect(() => {
     const leafletMarker = marker.current
     if (!leafletMarker || points.length < 2) {
@@ -374,6 +373,8 @@ export function MapCanvas({ map, state, lastRoutes, stateError, loading, error, 
                 position={toLatLng(coordinate)}
                 icon={refugeMarkerIcon(refuge.ocupados, refuge.capacidad)}
                 title={refugeLabel(refuge)}
+                zIndexOffset={1000}
+                riseOnHover
               >
                 <Tooltip direction="top">
                   {`${refugeLabel(refuge)} · ${refuge.ocupados}/${refuge.capacidad} personas${refuge.ocupados >= refuge.capacidad ? ' · LLENO' : ''}`}

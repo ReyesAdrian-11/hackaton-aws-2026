@@ -19,6 +19,14 @@ class GraphManager:
         self.game_to_osm = {f"N-{i:04d}": node for i, node in enumerate(nodes)}
         self.osm_to_game = {node: game for game, node in self.game_to_osm.items()}
         self._game_graph = nx.relabel_nodes(self.graph, self.osm_to_game, copy=True)
+        # The game models streets as traversable connections. OSM can encode
+        # one-way traffic, but keeping that direction in the simulation makes
+        # valid refuge destinations unreachable and leaves survivors frozen.
+        # Keep the original directed graph for map export and add reverse
+        # gameplay edges only when the opposite street is absent.
+        for source, target, key, data in tuple(self._game_graph.edges(keys=True, data=True)):
+            if not self._game_graph.has_edge(target, source):
+                self._game_graph.add_edge(target, source, **dict(data))
         self._nodes_geojson = None
         self._edges_geojson = None
 

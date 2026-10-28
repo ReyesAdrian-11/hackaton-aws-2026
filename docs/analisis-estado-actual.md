@@ -143,7 +143,6 @@ La Ronda 3 funciona, pero todavía supera el objetivo de latencia. La preparaci�
 ## Limitaciones actuales
 
 - El mapa tiene 6.769 nodos y 18.207 aristas; el reto sugiere aproximadamente 300 intersecciones.
-- El estado vive en memoria; Redis no está integrado.
 - El mapa transmite las coordenadas de 6.769 nodos; las geometrías de las 18.207 aristas se excluyen en la solicitud del frontend para limitar la carga. Los mosaicos de OpenStreetMap requieren conexión a Internet.
 - El inicio de sesión de operadores no está conectado porque no existe autenticación de usuarios.
 - El historial de eventos vive en memoria y se reinicia al reiniciar el backend.
@@ -158,8 +157,7 @@ La Ronda 3 funciona, pero todavía supera el objetivo de latencia. La preparaci�
 2. Reducir o normalizar el grafo para las necesidades del reto.
 3. Repetir la Ronda 3 y medir backend, simulador y visualización por separado.
 4. Evaluar paginación del historial si el volumen en memoria crece más allá de las rondas actuales.
-5. Integrar Redis para AWS.
-6. Completar despliegue, CloudWatch, Budget y documentación.
+5. Completar despliegue, CloudWatch, Budget y documentación.
 
 ## Conclusión
 

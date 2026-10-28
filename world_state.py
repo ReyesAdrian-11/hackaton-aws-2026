@@ -1,12 +1,11 @@
 from __future__ import annotations
 
 from threading import RLock
-
 from models import EstadoMundo
 
 
 class WorldStore:
-    """Estado temporal del mundo. Será reemplazable por Redis en AWS."""
+    """Estado temporal del mundo durante la sesión de EC2."""
 
     def __init__(self) -> None:
         self._lock = RLock()
@@ -32,6 +31,10 @@ class WorldStore:
             self._state = state.model_copy(deep=True)
             self._turno = self._state.turno
             return self._state.model_copy(deep=True)
+
+    def bootstrap(self, initial: EstadoMundo) -> EstadoMundo:
+        """Initialize the in-memory session at process startup."""
+        return self.replace(initial)
 
 
 store = WorldStore()

@@ -8,8 +8,9 @@ import time
 from contextlib import asynccontextmanager
 from concurrent.futures import ThreadPoolExecutor
 
-from fastapi import FastAPI, Header, HTTPException, Request, WebSocket, WebSocketDisconnect, status
+from fastapi import FastAPI, Header, HTTPException, Request, Response, WebSocket, WebSocketDisconnect, status
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.middleware.gzip import GZipMiddleware
 from fastapi.responses import JSONResponse
 
 from config import API_KEY, FRONTEND_ORIGINS, GRAPHML_PATH, REFUGES_PATH, ZONES_PATH
@@ -41,7 +42,7 @@ _executor = ThreadPoolExecutor(max_workers=2, thread_name_prefix="decisions")
 
 
 class StateHub:
-    """In-process fan-out of snapshots for WebSocket/AppSync adapters."""
+    """In-process fan-out of snapshots for the live WebSocket."""
 
     def __init__(self) -> None:
         self._clients: set[WebSocket] = set()
@@ -54,8 +55,9 @@ class StateHub:
         self._clients.discard(websocket)
 
     async def publish(self, state: EstadoMundo) -> None:
-        if not self._clients:
-            return
+        await self._broadcast(state)
+
+    async def _broadcast(self, state: EstadoMundo) -> None:
         payload = state.model_dump(by_alias=True)
         stale: list[WebSocket] = []
         for websocket in tuple(self._clients):
@@ -93,7 +95,7 @@ async def lifespan(app: FastAPI):
     if not GRAPHML_PATH.exists():
         raise FileNotFoundError(f"No se encontró el grafo: {GRAPHML_PATH}")
     graphs.load(GRAPHML_PATH)
-    store.replace(initial_state())
+    store.bootstrap(initial_state())
     warm_base_trees(graphs.game_graph(), [refuge.nodo for refuge in store.get().refugios])
     logger.info("Grafo listo: %s", graphs.metadata())
     try:
@@ -109,6 +111,7 @@ app.add_middleware(
     allow_methods=["GET", "POST"],
     allow_headers=["Content-Type", "x-api-key"],
 )
+app.add_middleware(GZipMiddleware, minimum_size=1000, compresslevel=6)
 
 
 @app.middleware("http")
@@ -156,6 +159,7 @@ def survivor_target(
 ) -> Refugio | None:
     """Choose a reachable refuge while respecting already planned arrivals."""
     reserved_capacity = reserved_capacity if reserved_capacity is not None else {}
+    graph = graphs.game_graph()
 
     def has_capacity(refuge: Refugio) -> bool:
         remaining = refuge.capacidad - refuge.ocupados
@@ -164,13 +168,12 @@ def survivor_target(
     survivor = next((s for s in world.sobrevivientes if s.id == survivor_id), None)
     if survivor and survivor.refugio:
         refuge = next((r for r in world.refugios if r.id == survivor.refugio), None)
-        if refuge and has_capacity(refuge):
+        if refuge and has_capacity(refuge) and survivor.nodo in base_distances(graph, refuge.nodo):
             return refuge
     available = [r for r in world.refugios if has_capacity(r)]
     if not survivor or not available:
         return None
 
-    graph = graphs.game_graph()
     reachable = [
         (distances[survivor.nodo], refuge)
         for refuge in available
@@ -279,7 +282,8 @@ async def websocket_estado(websocket: WebSocket):
 
 
 @app.get("/mapa")
-async def get_mapa(incluir_calles: bool = True):
+async def get_mapa(response: Response, incluir_calles: bool = True):
+    response.headers["Cache-Control"] = "public, max-age=3600"
     response = {
         "metadata": graphs.metadata(),
         "grafo": graphs.nodes_geojson(),
