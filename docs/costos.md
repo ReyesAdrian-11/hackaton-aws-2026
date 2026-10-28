@@ -20,28 +20,22 @@ No se incluye S3, Redis, DynamoDB, ElastiCache ni un balanceador de carga porque
 
 ## Estimación mensual
 
-| Servicio | Supuesto | Estimación |
-|---|---|---:|
-| EC2 | Instancia pequeña encendida todo el mes | USD 15–20 |
-| EBS | Volumen gp3 de 20 GiB | USD 2–3 |
-| Amplify | Hosting y tráfico bajo de demo | USD 0–5 |
-| CloudWatch | Logs y métricas básicas | USD 0–3 |
-| Route/DNS | Dominio gratuito o DNS externo | USD 0 |
-| **Total estimado** |  | **USD 17–31/mes** |
+| Servicio           | Supuesto                                |        Estimación |
+| ------------------ | --------------------------------------- | ----------------: |
+| EC2                | Instancia pequeña encendida todo el mes |         USD 15–20 |
+| EBS                | Volumen gp3 de 20 GiB                   |           USD 2–3 |
+| Amplify            | Hosting y tráfico bajo de demo          |           USD 0–5 |
+| CloudWatch         | Logs y métricas básicas                 |           USD 0–3 |
+| Route/DNS          | Dominio gratuito o DNS externo          |             USD 0 |
+| **Total estimado** |                                         | **USD 17–31/mes** |
 
 El costo real depende del tipo exacto de instancia, horas encendida, transferencia, logs y uso durante la prueba.
 
 ## Costo durante el evento
 
-Completar después de la demostración con datos de:
-
 ```text
-AWS Billing → Bills / Cost Explorer
-```
-
-```text
-Costo real del evento: USD ______
-Periodo medido: __________________
+Costo real del evento: USD 0.00
+Periodo medido: 27/10/2026 – 28/10/2026 09:00
 Cuenta/región: us-east-1
 ```
 
