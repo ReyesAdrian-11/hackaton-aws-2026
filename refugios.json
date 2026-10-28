@@ -5,7 +5,7 @@
     "nodo": "N-4041",
     "lat": -0.94274,
     "lng": -80.73234,
-    "capacidad": 60,
+    "capacidad": 50,
     "ocupados": 0
   },
   {
@@ -14,7 +14,7 @@
     "nodo": "N-5092",
     "lat": -0.95274,
     "lng": -80.745177,
-    "capacidad": 60,
+    "capacidad": 50,
     "ocupados": 0
   },
   {

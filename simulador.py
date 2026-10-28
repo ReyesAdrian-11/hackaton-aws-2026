@@ -646,7 +646,9 @@ def construir_simulador(
     refugios = [(item["id"], item["nodo"]) for item in refuge_data]
     for item in refuge_data:
         if simulator.graph.has_node(item["nodo"]):
-            simulator.mundo.refugios[item["id"]] = Refugio(item["id"], item["nodo"], item["capacidad"])
+            simulator.mundo.refugios[item["id"]] = Refugio(
+                item["id"], item["nodo"], min(int(item["capacidad"]), 50)
+            )
     zones_path = BASE_DIR / "zonas_iniciales.json"
     zones = json.loads(zones_path.read_text(encoding="utf-8"))
 

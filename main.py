@@ -80,6 +80,10 @@ PUBLIC_HTTP_ROUTES = {
 def initial_state() -> EstadoMundo:
     if REFUGES_PATH.exists():
         refugios = json.loads(REFUGES_PATH.read_text(encoding="utf-8"))
+        refugios = [
+            {**refuge, "capacidad": min(int(refuge.get("capacidad", 50)), 50)}
+            for refuge in refugios
+        ]
         return EstadoMundo(turno=0, refugios=refugios)
     return EstadoMundo()
 
@@ -455,7 +459,13 @@ async def replace_estado(body: EstadoCargaRequest, x_api_key: str | None = Heade
     previous_decisions = dict(_decisions)
     previous_routes = dict(_routes)
     previous_targets = dict(_targets)
-    updated = store.replace(body)
+    normalized = body.model_copy(update={
+        "refugios": [
+            refuge.model_copy(update={"capacidad": min(refuge.capacidad, 50)})
+            for refuge in body.refugios
+        ],
+    })
+    updated = store.replace(normalized)
     loop = asyncio.get_running_loop()
     await loop.run_in_executor(_executor, prepare_decisions, updated)
     new_blocked = {
