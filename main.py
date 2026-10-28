@@ -1,10 +1,12 @@
 """API del motor de rutas de Spookython."""
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import time
 from contextlib import asynccontextmanager
+from concurrent.futures import ThreadPoolExecutor
 
 from fastapi import FastAPI, Header, HTTPException, status
 from fastapi.middleware.cors import CORSMiddleware
@@ -29,6 +31,7 @@ graphs = GraphManager()
 simulation_service = SimulationService()
 _decisions: dict[tuple[int, str], str] = {}
 _routes: dict[tuple[int, str], list[str]] = {}
+_executor = ThreadPoolExecutor(max_workers=2, thread_name_prefix="decisions")
 
 
 def initial_state() -> EstadoMundo:
@@ -91,9 +94,11 @@ def survivor_target(survivor_id: str, world: EstadoMundo) -> str | None:
 
 def prepare_decisions(world: EstadoMundo) -> None:
     """Planifica una vez por turno; /paso únicamente consulta este caché."""
+    global _decisions, _routes
+
     started = time.perf_counter()
-    _decisions.clear()
-    _routes.clear()
+    new_decisions: dict[tuple[int, str], str] = {}
+    new_routes: dict[tuple[int, str], list[str]] = {}
     graph = graphs.game_graph()
     route_trees: dict[str, dict[str, str]] = {}
     for survivor in world.sobrevivientes:
@@ -101,8 +106,8 @@ def prepare_decisions(world: EstadoMundo) -> None:
             continue
         target = survivor_target(survivor.id, world)
         if target is None:
-            _decisions[(world.turno, survivor.id)] = survivor.nodo
-            _routes[(world.turno, survivor.id)] = [survivor.nodo]
+            new_decisions[(world.turno, survivor.id)] = survivor.nodo
+            new_routes[(world.turno, survivor.id)] = [survivor.nodo]
             continue
         if target not in route_trees:
             route_trees[target] = safe_route_tree(
@@ -127,9 +132,17 @@ def prepare_decisions(world: EstadoMundo) -> None:
                 continuation = route_from_tree(tree, next_node, target)
                 if continuation:
                     route.extend(continuation[1:])
-        _decisions[(world.turno, survivor.id)] = route[1] if len(route) > 1 else survivor.nodo
-        _routes[(world.turno, survivor.id)] = route
-    logger.info("Decisiones preparadas: turno=%d sobrevivientes=%d duración=%.2fms", world.turno, len(_decisions), (time.perf_counter() - started) * 1000)
+        new_decisions[(world.turno, survivor.id)] = route[1] if len(route) > 1 else survivor.nodo
+        new_routes[(world.turno, survivor.id)] = route
+
+    _decisions = new_decisions
+    _routes = new_routes
+    logger.info(
+        "Decisiones preparadas: turno=%d sobrevivientes=%d duración=%.2fms",
+        world.turno,
+        len(new_decisions),
+        (time.perf_counter() - started) * 1000,
+    )
 
 
 @app.get("/health", include_in_schema=False)
@@ -188,20 +201,52 @@ async def start_demo():
     )
 
 
+@app.get("/pasos", summary="Decisiones de todos los sobrevivientes para el turno actual")
+async def get_pasos(x_api_key: str | None = Header(default=None, alias="x-api-key")):
+    """Devuelve un mapa {sobrevivienteId: siguienteNodo} para todos los
+    sobrevivientes calculados en el último POST /estado.
+    El simulador puede usar esto en lugar de 200x POST /paso individuales,
+    reduciendo las 200 peticiones a 1 sola llamada (latencia típica < 5ms)."""
+    require_key(x_api_key)
+    turno_actual = store.get_turno()
+    return {
+        "turno": turno_actual,
+        "decisiones": {
+            sid: nodo
+            for (turno, sid), nodo in _decisions.items()
+            if turno == turno_actual
+        },
+    }
+
+
 @app.post("/paso", response_model=PasoResponse)
 async def paso(body: PasoRequest, x_api_key: str | None = Header(default=None, alias="x-api-key")):
     require_key(x_api_key)
     require_node(body.nodoActual)
-    world = store.get()
-    if body.turno != world.turno:
-        raise HTTPException(status_code=409, detail=f"Turno actual: {world.turno}.")
+    # Validar turno con get_turno() O(1) en lugar de deep-copy del mundo completo.
+    turno_actual = store.get_turno()
+    if body.turno != turno_actual:
+        raise HTTPException(status_code=409, detail=f"Turno actual: {turno_actual}.")
+
     cached = _decisions.get((body.turno, body.sobrevivienteId))
     if cached is not None:
-        return PasoResponse(siguienteNodo=cached)
+        graph = graphs.game_graph()
+        current = store.get()
+        if cached == body.nodoActual or (
+            graph.has_edge(body.nodoActual, cached)
+            and frozenset((body.nodoActual, cached)) not in current.aristasBloqueadas
+        ):
+            return PasoResponse(siguienteNodo=cached)
+        logger.warning("Cache miss por nodo divergente: sobreviviente=%s cache_nodo=%s actual=%s", body.sobrevivienteId, cached, body.nodoActual)
+
+    # Fallback: calcular on-the-fly desde la posición real reportada.
+    world = store.get()
     target = survivor_target(body.sobrevivienteId, world)
     if target is None:
         return PasoResponse(siguienteNodo=body.nodoActual)
-    next_node = next_safe_node(graphs.game_graph(), body.nodoActual, target, world.zombies, world.aristasBloqueadas)
+    next_node = next_safe_node(
+        graphs.game_graph(), body.nodoActual, target, world.zombies, world.aristasBloqueadas
+    )
     return PasoResponse(siguienteNodo=next_node)
 
 
@@ -209,22 +254,22 @@ async def paso(body: PasoRequest, x_api_key: str | None = Header(default=None, a
 async def replace_estado(body: EstadoCargaRequest, x_api_key: str | None = Header(default=None, alias="x-api-key")):
     """Endpoint temporal para integrar y probar el simulador local."""
     require_key(x_api_key)
-    for item in body.zombies:
-        require_node(item.nodo)
-        if item.nodoAnterior:
-            require_node(item.nodoAnterior)
-        for node in item.trayecto:
-            require_node(node)
-    for item in body.sobrevivientes:
-        require_node(item.nodo)
-        if item.nodoAnterior:
-            require_node(item.nodoAnterior)
-        if item.siguienteNodo:
-            require_node(item.siguienteNodo)
-        for node in [*item.trayecto, *item.ruta]:
-            require_node(node)
-    for refuge in body.refugios:
-        require_node(refuge.nodo)
+
+    all_nodes = {
+        node
+        for item in body.zombies
+        for node in (item.nodo, item.nodoAnterior, *item.trayecto)
+        if node is not None
+    }
+    all_nodes.update(
+        node
+        for item in body.sobrevivientes
+        for node in (item.nodo, item.nodoAnterior, item.siguienteNodo, *item.trayecto, *item.ruta)
+        if node is not None
+    )
+    all_nodes.update(refuge.nodo for refuge in body.refugios)
+    for node in all_nodes:
+        require_node(node)
     for edge in body.aristasBloqueadas:
         require_edge(edge)
     for event in body.eventos:
@@ -232,10 +277,12 @@ async def replace_estado(body: EstadoCargaRequest, x_api_key: str | None = Heade
             require_node(event.nodo)
         if event.arista:
             require_edge(event.arista)
+
     previous = store.get()
     previous_decisions = dict(_decisions)
     updated = store.replace(body)
-    prepare_decisions(updated)
+    loop = asyncio.get_running_loop()
+    await loop.run_in_executor(_executor, prepare_decisions, updated)
     new_blocked = {
         frozenset(edge) for edge in updated.aristasBloqueadas
     } - {
