@@ -252,7 +252,10 @@ class Simulador:
                 continue
             zombie.recorridas = []
             objetivo = self._objetivo_corredor(zombie)
-            for _ in range(2):
+            # En la Ronda 3 se reduce a un salto por turno para que el
+            # corredor siga siendo una amenaza sin atravesar el mapa entero.
+            max_steps = 1 if self.ronda == 3 else 2
+            for _ in range(max_steps):
                 opciones = self.vecinos_disponibles(zombie.nodo)
                 if not opciones:
                     break
@@ -451,7 +454,15 @@ class Simulador:
             for survivor in activos:
                 refuge_id = destinations.get(survivor.id)
                 if refuge_id in self.mundo.refugios:
-                    survivor.refugio = refuge_id
+                    if refuge_id != survivor.refugio:
+                        previous_refuge = survivor.refugio
+                        survivor.refugio = refuge_id
+                        self.registrar_evento(
+                            "reasignacion",
+                            f"{survivor.id} fue reasignado de {previous_refuge} a {refuge_id}",
+                            actores=[survivor.id, refuge_id],
+                            nodo=survivor.nodo,
+                        )
                 next_node = decisions.get(survivor.id, survivor.nodo)
                 if self.movimiento_valido(survivor.nodo, next_node) and self.graph.has_node(next_node):
                     survivor.nodo = next_node
@@ -658,7 +669,8 @@ def construir_simulador(
                 * 111_000
                 * math.cos(math.radians(zone["lat"]))
             )
-            if math.hypot(latitude_distance, longitude_distance) <= zone["radioMetros"]:
+            radius = zone["radioMetros"] * (2.2 if ronda == 3 else 1.0)
+            if math.hypot(latitude_distance, longitude_distance) <= radius:
                 candidates.append(str(node))
         zone_candidates.append(
             sorted(candidates) if candidates else zone_nodes(zone["nodoReferencia"])

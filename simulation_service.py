@@ -35,10 +35,10 @@ ROUND_CONFIGS = {
     2: RoundConfig(survivors=80, walkers=30, runners=15, hordes=5, event_turns=(40,)),
     3: RoundConfig(
         survivors=200,
-        walkers=70,
-        runners=50,
-        hordes=10,
-        sleepers=20,
+        walkers=40,
+        runners=25,
+        hordes=5,
+        sleepers=10,
         event_turns=(85, 110),
     ),
 }
