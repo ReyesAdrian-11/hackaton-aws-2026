@@ -1,5 +1,5 @@
 [
   {"turno": 40, "tipo": "bloqueo", "arista": ["N-0100", "N-0101"], "nombre": "Puente colapsado"},
   {"turno": 85, "tipo": "bloqueo", "arista": ["N-0200", "N-0201"], "nombre": "Avenida bloqueada"},
-  {"turno": 110, "tipo": "bloqueo", "arista": ["N-0300", "N-0301"], "nombre": "Calle bloqueada"}
+  {"turno": 110, "tipo": "bloqueo", "arista": ["N-0300", "N-4156"], "nombre": "Calle bloqueada"}
 ]

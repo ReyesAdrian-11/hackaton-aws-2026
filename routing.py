@@ -75,6 +75,49 @@ def warm_base_trees(graph: nx.MultiDiGraph, targets: Iterable[str]) -> None:
         _base_tree(graph, target)
 
 
+def safe_route_tree(
+    graph: nx.MultiDiGraph,
+    target: str,
+    zombies: list[Any],
+    blocked: Iterable[list[str]],
+) -> dict[str, str]:
+    """Calcula una vez por destino el siguiente nodo de rutas seguras."""
+    forbidden = danger_nodes(graph, zombies)
+    forbidden.discard(target)
+    weight = _edge_weight_factory(forbidden, blocked_edges(blocked))
+    try:
+        _, paths = nx.single_source_dijkstra(
+            graph.reverse(copy=False),
+            target,
+            weight=weight,
+        )
+    except nx.NodeNotFound:
+        return {}
+    return {
+        str(current): str(path[-2])
+        for current, path in paths.items()
+        if len(path) > 1
+    }
+
+
+def route_from_tree(
+    tree: dict[str, str],
+    current: str,
+    target: str,
+) -> list[str] | None:
+    if current == target:
+        return [current]
+    route = [current]
+    visited = {current}
+    while route[-1] != target:
+        next_node = tree.get(route[-1])
+        if next_node is None or next_node in visited:
+            return None
+        route.append(next_node)
+        visited.add(next_node)
+    return route
+
+
 def next_safe_node(
     graph: nx.MultiDiGraph,
     current: str,

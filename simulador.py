@@ -16,7 +16,7 @@ import random
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Iterable
+from typing import Any, Iterable
 
 import httpx
 import networkx as nx
@@ -36,6 +36,7 @@ class Zombie:
     visible: bool = True
     activo: bool = True
     recorridas: list[tuple[str, str]] = field(default_factory=list)
+    nodo_anterior: str | None = None
 
 
 @dataclass
@@ -72,7 +73,8 @@ class Mundo:
     sobrevivientes: dict[str, Sobreviviente] = field(default_factory=dict)
     refugios: dict[str, Refugio] = field(default_factory=dict)
     aristas_bloqueadas: set[frozenset[str]] = field(default_factory=set)
-    eventos: list[str] = field(default_factory=list)
+    eventos: list[dict[str, Any]] = field(default_factory=list)
+    siguiente_evento: int = 1
     movimientos_zombies: dict[str, list[tuple[str, str]]] = field(default_factory=dict)
 
     def visible_zombies(self) -> list[Zombie]:
@@ -88,12 +90,15 @@ class Simulador:
         seed: int = 20261031,
         timeout: float = 0.50,
         max_concurrency: int = 250,
+        ronda: int = 1,
     ) -> None:
         self.graph = graph
         self.api_url = api_url.rstrip("/")
         self.api_key = api_key
         self.rng = random.Random(seed)
         self.timeout = timeout
+        self.ronda = ronda
+        self.simulacion = "en_curso"
         self.semaphore = asyncio.Semaphore(max_concurrency)
         self.mundo = Mundo()
         self.latencias_ms: list[float] = []
@@ -113,6 +118,27 @@ class Simulador:
 
     def vecinos_disponibles(self, nodo: str) -> list[str]:
         return [v for v in self.vecinos(nodo) if self.arista_disponible(nodo, v)]
+
+    def registrar_evento(
+        self,
+        tipo: str,
+        mensaje: str,
+        actores: list[str] | None = None,
+        nodo: str | None = None,
+        arista: tuple[str, str] | None = None,
+    ) -> None:
+        event: dict[str, Any] = {
+            "id": f"EV-{self.mundo.siguiente_evento:05d}",
+            "turno": self.mundo.turno,
+            "tipo": tipo,
+            "mensaje": mensaje,
+            "actores": actores or [],
+            "nodo": nodo,
+            "arista": list(arista) if arista else None,
+        }
+        self.mundo.siguiente_evento += 1
+        self.mundo.eventos.append(event)
+        del self.mundo.eventos[:-100]
 
     def distancia_saltos(self, origen: str, destino: str, limite: int | None = None) -> int | None:
         if origen == destino:
@@ -213,35 +239,78 @@ class Simulador:
             if cerca:
                 zombie.tipo = "caminante"
                 zombie.visible = True
-                self.mundo.eventos.append(f"{zombie.id} despertó en {zombie.nodo}")
+                self.registrar_evento(
+                    "despertar",
+                    f"{zombie.id} despertó",
+                    actores=[zombie.id],
+                    nodo=zombie.nodo,
+                )
 
     def aplicar_eventos(self, eventos: Iterable[Evento]) -> None:
         for evento in eventos:
             if evento.turno != self.mundo.turno:
                 continue
+            if len(evento.arista) != 2 or not (
+                self.graph.has_edge(*evento.arista)
+                or self.graph.has_edge(*reversed(evento.arista))
+            ):
+                logger.warning(
+                    "Evento omitido: arista inexistente en turno %d: %s (%s)",
+                    evento.turno,
+                    evento.arista,
+                    evento.nombre,
+                )
+                continue
             self.mundo.aristas_bloqueadas.add(frozenset(evento.arista))
-            self.mundo.eventos.append(evento.nombre)
+            self.registrar_evento(
+                "bloqueo",
+                evento.nombre,
+                nodo=evento.arista[0],
+                arista=evento.arista,
+            )
 
     def mover_zombies(self, eventos: Iterable[Evento] = ()) -> None:
         self.aplicar_eventos(eventos)
         self._despertar_dormidos()
         for zombie in self.mundo.zombies.values():
             zombie.recorridas = []
+            zombie.nodo_anterior = zombie.nodo
         self._mover_caminantes()
         self._mover_corredores()
 
     def _estado_api(self) -> dict:
         return {
             "turno": self.mundo.turno,
+            "ronda": self.ronda,
+            "simulacion": self.simulacion,
             "zombies": [
-                {"id": z.id, "tipo": z.tipo, "nodo": z.nodo, "visible": z.visible}
+                {
+                    "id": z.id,
+                    "tipo": z.tipo,
+                    "nodo": z.nodo,
+                    "nodoAnterior": z.nodo_anterior,
+                    "trayecto": [
+                        z.nodo_anterior or z.nodo,
+                        *[destination for _, destination in z.recorridas],
+                    ],
+                    "visible": z.visible,
+                }
                 for z in self.mundo.zombies.values() if z.activo
             ],
             "sobrevivientes": [
-                {"id": s.id, "nodo": s.nodo, "refugio": s.refugio, "activo": s.activo}
-                for s in self.mundo.sobrevivientes.values() if s.activo
+                {
+                    "id": s.id,
+                    "nodo": s.nodo,
+                    "nodoAnterior": s.nodo_anterior,
+                    "trayecto": [s.nodo_anterior or s.nodo, s.nodo],
+                    "refugio": s.refugio,
+                    "activo": s.activo,
+                    "resultado": "rescatado" if s.a_salvo else "mordido" if s.mordido else None,
+                }
+                for s in self.mundo.sobrevivientes.values()
             ],
             "aristasBloqueadas": [list(edge) for edge in self.mundo.aristas_bloqueadas],
+            "eventos": self.mundo.eventos,
             "refugios": [
                 {"id": r.id, "nodo": r.nodo, "capacidad": r.capacidad, "ocupados": r.ocupados}
                 for r in self.mundo.refugios.values()
@@ -295,44 +364,91 @@ class Simulador:
                 survivor.nodo = destino
 
     def resolver_resultado(self) -> None:
-        # Colisión final en nodo.
-        zombies_por_nodo = {z.nodo for z in self.mundo.zombies.values() if z.activo}
-        movimientos_zombies = [edge for z in self.mundo.zombies.values() for edge in z.recorridas]
+        visible_zombies = [
+            zombie
+            for zombie in self.mundo.zombies.values()
+            if zombie.activo and zombie.visible
+        ]
         for survivor in self.mundo.sobrevivientes.values():
             if not survivor.activo:
                 continue
-            mordido = survivor.nodo in zombies_por_nodo
-            # Cruce en sentidos opuestos durante el turno.
-            for origen, destino in movimientos_zombies:
-                # Se necesita el nodo anterior del sobreviviente; se conserva en la decisión local.
-                if getattr(survivor, "nodo_anterior", survivor.nodo) == destino and survivor.nodo == origen:
-                    mordido = True
-            if mordido:
+            attacking_zombie = next(
+                (zombie for zombie in visible_zombies if zombie.nodo == survivor.nodo),
+                None,
+            )
+            if attacking_zombie is None:
+                attacking_zombie = next(
+                    (
+                        zombie
+                        for zombie in visible_zombies
+                        if any(
+                            survivor.nodo_anterior == destination
+                            and survivor.nodo == origin
+                            for origin, destination in zombie.recorridas
+                        )
+                    ),
+                    None,
+                )
+            if attacking_zombie is not None:
                 survivor.activo = False
                 survivor.mordido = True
+                self.registrar_evento(
+                    "mordida",
+                    f"{attacking_zombie.id} mordió a {survivor.id}",
+                    actores=[attacking_zombie.id, survivor.id],
+                    nodo=survivor.nodo,
+                )
                 continue
             refuge = self.mundo.refugios.get(survivor.refugio)
             if refuge and survivor.nodo == refuge.nodo and refuge.ocupados < refuge.capacidad:
                 survivor.activo = False
                 survivor.a_salvo = True
                 refuge.ocupados += 1
-                self.mundo.eventos.append(f"{survivor.id} llegó a {refuge.id}")
+                self.registrar_evento(
+                    "rescate",
+                    f"{survivor.id} llegó a {refuge.id}",
+                    actores=[survivor.id, refuge.id],
+                    nodo=refuge.nodo,
+                )
 
-    async def ejecutar_turno(self, eventos: Iterable[Evento] = ()) -> None:
+    async def ejecutar_turno(
+        self,
+        eventos: Iterable[Evento] = (),
+        client: httpx.AsyncClient | None = None,
+    ) -> None:
+        if client is None:
+            limits = httpx.Limits(max_connections=250, max_keepalive_connections=250)
+            async with httpx.AsyncClient(timeout=self.timeout, limits=limits) as own_client:
+                await self.ejecutar_turno(eventos, own_client)
+            return
+
         for survivor in self.mundo.sobrevivientes.values():
             survivor.nodo_anterior = survivor.nodo
         self.mover_zombies(eventos)
-        limits = httpx.Limits(max_connections=250, max_keepalive_connections=250)
-        async with httpx.AsyncClient(timeout=self.timeout, limits=limits) as client:
-            await self.publicar_estado(client)
-            await self.mover_sobrevivientes(client)
+        await self.publicar_estado(client)
+        await self.mover_sobrevivientes(client)
         self.resolver_resultado()
         self.mundo.turno += 1
+        await self.publicar_estado(client)
 
-    async def ejecutar(self, turnos: int, eventos: Iterable[Evento] = (), intervalo: float = 2.0) -> None:
+    async def ejecutar(
+        self,
+        turnos: int,
+        eventos: Iterable[Evento] = (),
+        intervalo: float = 2.0,
+        client: httpx.AsyncClient | None = None,
+    ) -> None:
+        if client is None:
+            limits = httpx.Limits(max_connections=250, max_keepalive_connections=250)
+            async with httpx.AsyncClient(timeout=self.timeout, limits=limits) as own_client:
+                await self.ejecutar(turnos, eventos, intervalo, own_client)
+            return
+
         for _ in range(turnos):
             inicio = time.perf_counter()
-            await self.ejecutar_turno(eventos)
+            if not any(s.activo for s in self.mundo.sobrevivientes.values()):
+                break
+            await self.ejecutar_turno(eventos, client)
             duracion = time.perf_counter() - inicio
             logger.info(
                 "Turno %d | vivos=%d salvos=%d mordidos=%d duración=%.0fms",
@@ -358,10 +474,21 @@ class Simulador:
         }
 
 
-def construir_simulador(args: argparse.Namespace) -> Simulador:
-    manager = GraphManager()
-    manager.load(GRAPHML_PATH)
-    simulator = Simulador(manager.game_graph(), api_url=args.api_url, api_key=args.api_key, seed=args.semilla)
+def construir_simulador(
+    args: argparse.Namespace,
+    graph: nx.MultiDiGraph | None = None,
+    zombies_en_zonas: bool = False,
+) -> Simulador:
+    if graph is None:
+        manager = GraphManager()
+        manager.load(GRAPHML_PATH)
+        graph = manager.game_graph()
+    simulator = Simulador(
+        graph,
+        api_url=args.api_url,
+        api_key=args.api_key,
+        seed=args.semilla,
+    )
     refuge_data = json.loads(REFUGES_PATH.read_text(encoding="utf-8"))
     refugios = [(item["id"], item["nodo"]) for item in refuge_data]
     for item in refuge_data:
@@ -394,13 +521,23 @@ def construir_simulador(args: argparse.Namespace) -> Simulador:
             nodo=candidates[(i // len(zone_candidates)) % len(candidates)],
             refugio=refugios[i % len(refugios)][0],
         )
-    nodes = list(simulator.graph.nodes())
+    nodes = sorted(simulator.graph.nodes())
     cantidades = [("caminante", args.caminantes), ("corredor", args.corredores), ("horda", args.hordas), ("dormido", args.dormidos)]
     cursor = len(nodes) // 3
     number = 1
     for tipo, cantidad in cantidades:
         for _ in range(cantidad):
-            simulator.mundo.zombies[f"Z-{number:04d}"] = Zombie(f"Z-{number:04d}", tipo, nodes[cursor % len(nodes)], visible=tipo != "dormido")
+            if zombies_en_zonas and zone_candidates:
+                zone = zone_candidates[(number - 1) % len(zone_candidates)]
+                node = zone[(number * 7) % len(zone)]
+            else:
+                node = nodes[cursor % len(nodes)]
+            simulator.mundo.zombies[f"Z-{number:04d}"] = Zombie(
+                f"Z-{number:04d}",
+                tipo,
+                node,
+                visible=tipo != "dormido",
+            )
             cursor += 7
             number += 1
     return simulator

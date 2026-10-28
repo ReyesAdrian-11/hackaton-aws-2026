@@ -2,13 +2,13 @@
 
 ## Resumen
 
-Spookython cuenta con un backend FastAPI funcional y un simulador integrado para Escape de Manta. El backend recomienda movimientos y el simulador mantiene la verdad de la partida.
+Spookython cuenta con un backend FastAPI funcional, un simulador integrado para Escape de Manta y un frontend React + Vite. El backend recomienda movimientos y el simulador mantiene la verdad de la partida; el frontend observa y visualiza esos datos, sin duplicar la lógica de juego.
 
 ## Backend implementado
 
 Archivos: `main.py`, `models.py`, `routing.py`, `world_state.py`, `graph_manager.py`, `config.py`, `refugios.json` y `zonas_iniciales.json`.
 
-Incluye FastAPI, NetworkX, carga del grafo GraphML en memoria, IDs estables `N-0000`, autenticación `x-api-key`, rutas seguras, cuatro refugios reales, cuatro zonas iniciales, calles bloqueadas, hordas que bloquean nodo y vecinos, árboles de rutas precalculados y caché de decisiones por turno.
+Incluye FastAPI, NetworkX, carga del grafo GraphML en memoria, IDs estables `N-0000`, autenticación `x-api-key`, rutas seguras, cuatro refugios, cuatro zonas iniciales, calles bloqueadas, hordas que bloquean nodo y vecinos, árboles de rutas precalculados y caché de decisiones por turno. `GET /mapa` entrega nodos, zonas y refugios; las geometrías de calles se incluyen de forma opcional para reducir el peso cuando el cliente solicita `incluir_calles=false`. El endpoint permite CORS para los orígenes configurados en `SPOOKYTHON_CORS_ORIGINS`.
 
 Endpoints:
 
@@ -17,6 +17,7 @@ GET  /health
 GET  /estado
 POST /estado
 GET  /mapa
+POST /simulacion/demo
 POST /paso
 ```
 
@@ -58,7 +59,7 @@ Las coordenadas están en `zonas_iniciales.json` y `refugios.json`. Los nodos so
 
 Archivos: `simulador.py`, `eventos.json` y `zonas_iniciales.json`.
 
-Incluye turnos de dos segundos, caminantes, corredores, hordas, dormidos, BFS limitado para persecuciones, bloqueos de calles, mordidas por nodo y cruces contrarios, refugios, semillas reproducibles, peticiones concurrentes y métricas de rendimiento.
+Incluye turnos de dos segundos, caminantes, corredores, hordas, dormidos, BFS limitado para persecuciones, bloqueos de calles, mordidas por nodo y cruces contrarios, refugios, semillas reproducibles, peticiones concurrentes y métricas de rendimiento. La Ronda 1 de demo se inicia desde `POST /simulacion/demo` y se ejecuta como tarea del backend; usa 20 sobrevivientes, 10 caminantes, seed reproducible y un máximo de 150 turnos. `GET /estado` conserva los actores resueltos, los resultados, los mensajes del simulador y el siguiente nodo recomendado.
 
 Orden de cada turno:
 
@@ -76,7 +77,7 @@ Orden de cada turno:
 
 ## Imágenes
 
-La carpeta `images/` contiene los recursos pixel-art para el frontend definitivo:
+La carpeta `images/` contiene los recursos pixel-art disponibles para la interfaz:
 
 ```text
 caminante.png
@@ -89,14 +90,20 @@ refugio.png
 vecino.png
 ```
 
-El frontend de prueba fue eliminado para continuar con una implementación definitiva.
+El frontend React + Vite usa la ilustración de hordas en la portada y los sprites disponibles para los actores del mapa vial real.
+
+## Frontend implementado
+
+El directorio `frontend/` contiene la portada de demo y un mapa táctico a pantalla completa con Leaflet y mosaicos de OpenStreetMap. Los mosaicos aportan contexto geográfico, mientras que los nodos, rutas, trayectos, bloqueos y refugios proceden de la API; el navegador interpola los trayectos publicados, sin inventar movimientos. El mapa permite zoom y paneo, muestra sprites legibles y rutas completas, y mantiene una franja visible con los eventos recientes emitidos por el simulador. Un botón flotante permite abrir los paneles de panorama, amenazas, refugios, zonas, vías bloqueadas y eventos. El estado se consulta cada 500 ms para reflejar turnos de dos segundos; si falla la API, conserva la última respuesta válida e indica que está desactualizada. Los mosaicos requieren Internet; si fallan, se mantienen los actores y las capas del simulador. El formulario de operador es visual: la autenticación de usuarios aún no existe en el backend.
+
+Instrucciones para iniciar backend y frontend: [README.md](../README.md). Diseño aprobado: [2026-10-27-frontend-design.md](plans/2026-10-27-frontend-design.md).
 
 ## Pruebas
 
-Hay siete pruebas automatizadas:
+Hay catorce pruebas automatizadas:
 
 ```text
-7 passed
+14 passed
 ```
 
 Cubren rutas, zombies, bloqueos, caminantes, dormidos, eventos y cruces peligrosos.
@@ -136,7 +143,9 @@ La Ronda 3 funciona, pero todavía supera el objetivo de latencia. La preparaci�
 
 - El mapa tiene 6.769 nodos y 18.207 aristas; el reto sugiere aproximadamente 300 intersecciones.
 - El estado vive en memoria; Redis no está integrado.
-- El frontend definitivo todavía está pendiente.
+- El mapa transmite las coordenadas de 6.769 nodos; las geometrías de las 18.207 aristas se excluyen en la solicitud del frontend para limitar la carga. Los mosaicos de OpenStreetMap requieren conexión a Internet.
+- El inicio de sesión de operadores no está conectado porque no existe autenticación de usuarios.
+- El historial de eventos vive en memoria y se reinicia al reiniciar el backend.
 - El despliegue final en AWS está pendiente.
 - La Ronda 3 requiere optimización adicional de conexiones HTTP.
 - Predicción avanzada, capacidad avanzada y camionetas no están implementadas.
@@ -144,13 +153,13 @@ La Ronda 3 funciona, pero todavía supera el objetivo de latencia. La preparaci�
 
 ## Próximos pasos
 
-1. Implementar el frontend definitivo usando las imágenes de `images/`.
-2. Reutilizar un cliente HTTP persistente durante toda la simulación.
-3. Reducir o normalizar el grafo.
-4. Repetir la Ronda 3 y medir backend y simulador por separado.
+1. Reutilizar un cliente HTTP persistente durante toda la simulación.
+2. Reducir o normalizar el grafo para las necesidades del reto.
+3. Repetir la Ronda 3 y medir backend, simulador y visualización por separado.
+4. Decidir si se necesita exponer un historial de eventos en la API.
 5. Integrar Redis para AWS.
 6. Completar despliegue, CloudWatch, Budget y documentación.
 
 ## Conclusión
 
-El nivel base está avanzado: existe backend, simulador, autenticación, rutas seguras, reglas principales, eventos, refugios, zonas iniciales y pruebas automatizadas. La Ronda 2 tiene buen resultado de latencia. La prioridad es implementar el frontend definitivo, AWS y documentación antes de los extras.
+El nivel base está avanzado: existe backend, simulador, reglas principales, eventos, refugios, zonas iniciales, pruebas automatizadas y una interfaz visual conectada a la API. La Ronda 2 tiene buen resultado de latencia. Las prioridades pendientes son optimizar la Ronda 3, desplegar en AWS y decidir las ampliaciones de autenticación e historial antes de los extras.
