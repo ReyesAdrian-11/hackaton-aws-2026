@@ -1,0 +1,29 @@
+flowchart LR
+    U[Usuario / Jurado] --> CF[AWS Amplify
+Frontend React + Vite]
+    CF -->|HTTPS| DNS[Dominio HTTPS del backend]
+    DNS --> NG[Nginx en EC2]
+    NG --> API[FastAPI
+Motor de rutas]
+    API --> R[NetworkX
+Grafo GraphML de Manta]
+    API --> WS[Estado en memoria
+WorldStore]
+    API --> RT[POST /paso
+GET /pasos]
+    SIM[SimulationService
+Rondas R1 · R2 · R3] -->|estado y decisiones| API
+    SIM --> RULES[Simulador de zombies
+caminantes · corredores · hordas · dormidos]
+    RULES --> R
+    API -->|GET /estado · WebSocket| CF
+    OSM[OpenStreetMap / OSMnx] --> R
+    CW[CloudWatch / logs] -. monitoreo .-> API
+    B[AWS Budget] -. alerta de costos .-> U
+
+    classDef aws fill:#172a3b,stroke:#ffb64d,color:#fff
+    classDef app fill:#123c3c,stroke:#53e3b0,color:#fff
+    classDef data fill:#35284c,stroke:#c995ff,color:#fff
+    class CF,DNS,NG,CW,B aws
+    class API,SIM,RULES app
+    class R,WS,OSM data

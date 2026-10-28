@@ -101,10 +101,10 @@ Instrucciones para iniciar backend y frontend: [README.md](../README.md). Diseñ
 
 ## Pruebas
 
-Hay veintidós pruebas automatizadas:
+Hay veinticuatro pruebas automatizadas:
 
 ```text
-22 passed
+24 passed
 ```
 
 Cubren rutas, zombies, bloqueos, caminantes, dormidos, eventos y cruces peligrosos.

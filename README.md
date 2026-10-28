@@ -10,6 +10,8 @@ Proyecto de simulación para observar cómo cambian las rutas de evacuación ant
 - `manta_grafo.graphml`: grafo vial local de Manta.
 - `frontend/`: interfaz React + TypeScript + Vite.
 - `docs/analisis-estado-actual.md`: análisis funcional y pendientes.
+- `docs/arquitectura.md`: diagrama y descripción de la arquitectura desplegable.
+- `docs/costos.md`: estimación mensual y plantilla para registrar el gasto real.
 - `docs/plans/2026-10-27-live-map-design.md`: diseño aprobado del mapa táctico en vivo.
 
 ## Ejecutar en desarrollo
@@ -80,3 +82,10 @@ npm run lint
 ```
 
 Ejecuta `npm` dentro de `frontend/`; el `package.json` no está en la raíz.
+
+## Arquitectura y costos
+
+- [Diagrama de arquitectura](docs/arquitectura.md)
+- [Declaración de costos](docs/costos.md)
+
+La captura real del AWS Budget debe agregarse manualmente en `docs/budget.png` después de configurar la alerta en la cuenta de AWS. Las URLs públicas del frontend y backend deben completarse antes de la entrega final.
