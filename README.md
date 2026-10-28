@@ -2,6 +2,22 @@
 
 Proyecto de simulación para observar cómo cambian las rutas de evacuación ante amenazas y bloqueos en la red vial de Manta. El backend FastAPI y `simulador.py` mantienen la lógica y el estado de la partida; el frontend es un observatorio visual conectado a esos datos.
 
+## Qué hace el proyecto
+
+Spookython simula una evacuación urbana en Manta con sobrevivientes, refugios,
+zombis y cierres viales que cambian durante la partida. El servidor calcula el
+siguiente movimiento seguro usando el grafo vial real, publica el estado del
+mundo y registra los motivos de cada cambio de ruta.
+
+La demostración incluye tres rondas:
+
+- **Ronda 1 — Anochecer:** 20 sobrevivientes y caminantes.
+- **Ronda 2 — Medianoche:** 80 sobrevivientes, caminantes, corredores y hordas; un puente se bloquea en vivo.
+- **Ronda 3 — Apocalipsis:** 200 sobrevivientes, todos los tipos de zombis y dos bloqueos dinámicos.
+
+Cada tick dura dos segundos. Primero se mueven los zombis, después los
+ sobrevivientes y finalmente se resuelven mordidas, rescates y eventos.
+
 ## Estructura
 
 - `main.py`, `routing.py`, `models.py`: API y motor de rutas.
@@ -71,6 +87,109 @@ cierre real con `POST /simulacion/incidente`:
 
 El backend valida la arista, lo agenda para el siguiente tick atómico y publica
 el bloqueo junto con las rutas recalculadas y los desvíos afectados.
+
+## Despliegue en AWS
+
+Amplify aloja únicamente el frontend estático. FastAPI se ejecuta como un
+servicio independiente; la arquitectura documentada usa una instancia EC2
+Ubuntu con Nginx como proxy HTTPS.
+
+### Backend en EC2
+
+En la instancia instala Python, Git y Nginx, clona el repositorio y ejecuta:
+
+```bash
+sudo apt update
+sudo apt install -y git python3-venv nginx
+git clone https://github.com/ReyesAdrian-11/hackaton-aws-2026.git
+cd hackaton-aws-2026
+python3 -m venv .venv
+source .venv/bin/activate
+pip install -r requirements.txt
+```
+
+Configura las variables del backend antes de iniciar FastAPI:
+
+```bash
+export SPOOKYTHON_API_KEY="cambia-esta-clave"
+export SPOOKYTHON_CORS_ORIGINS="https://TU_APP.amplifyapp.com"
+uvicorn main:app --host 0.0.0.0 --port 8000
+```
+
+El endpoint de comprobación es `GET /health`. En producción, Nginx debe
+terminar HTTPS y reenviar al puerto 8000; no se debe publicar la clave en el
+frontend. Para el detalle de componentes consulta [docs/arquitectura.md](docs/arquitectura.md).
+
+### Frontend en Amplify
+
+El archivo `amplify.yml` ya configura el monorepo:
+
+```text
+Root directory: frontend
+Build command: npm run build
+Output directory: dist
+```
+
+En **Amplify → App settings → Environment variables** agrega durante el build:
+
+```text
+VITE_API_BASE_URL=https://TU_BACKEND_PUBLICO
+```
+
+La URL debe ser la dirección HTTPS pública del backend, sin `/api` al final.
+Después ejecuta **Redeploy this version**. Si no se define esta variable, el
+frontend intenta usar `/api` en el dominio de Amplify y aparece el error 404.
+
+### Prueba de despliegue
+
+```bash
+curl https://TU_BACKEND_PUBLICO/health
+```
+
+Debe responder un JSON con `status: ok`. Luego abre la URL de Amplify y pulsa
+el botón de demo; el navegador debe solicitar directamente
+`https://TU_BACKEND_PUBLICO/simulacion/demo`.
+
+## Decisiones de diseño
+
+- FastAPI concentra los contratos HTTP y `SimulationService` controla una sola
+  sesión de simulación para evitar carreras entre rondas.
+- `WorldStore` mantiene un snapshot en memoria y publica el estado por REST y
+  WebSocket. Esto mantiene `/paso` rápido y permite recalcular después de cada
+  tick.
+- NetworkX usa Dijkstra con pesos de tiempo: la longitud de la arista se
+  divide por la velocidad configurada para su tipo de calle. Los bloqueos y
+  zombis visibles se excluyen de la ruta.
+- Los incidentes se validan contra el grafo, se programan para el siguiente
+  tick atómico y producen eventos de bloqueo y desvío observables.
+- La capacidad de los refugios se reserva durante la planificación para evitar
+  que varios sobrevivientes reciban simultáneamente el último cupo.
+- La simulación usa memoria local porque la prueba de fuego corre como una
+  sesión única. Una versión multiinstancia debe reemplazar `WorldStore` por
+  Redis/ElastiCache o una persistencia compartida.
+
+## Limitaciones conocidas
+
+- El archivo vial actual contiene aproximadamente 6.769 nodos y 18.207 aristas;
+  es más detallado que el escenario reducido de unas 300 intersecciones.
+- El estado se pierde al reiniciar el proceso y el WebSocket actual mantiene
+  conexiones dentro de una sola instancia.
+- AWS Budget, HTTPS, Nginx y CloudWatch requieren configuración en la cuenta;
+  el repositorio no contiene credenciales ni crea recursos automáticamente.
+- OpenStreetMap se usa como mapa base y requiere conectividad del navegador.
+- Las velocidades por tipo de calle son valores medios de simulación y deben
+  calibrarse si el jurado entrega una tabla oficial diferente.
+
+## Presupuesto y control de costos AWS
+
+Se configuraron presupuestos para detectar gasto inesperado:
+
+![Captura de AWS Budgets](docs/aws-budget.png)
+
+La captura muestra `alerta-cero-gasto` con umbral de 0 USD y `My Monthly Cost
+Budget` con límite mensual de 10 USD. La estimación y los supuestos de costo se
+encuentran en [docs/costos.md](docs/costos.md). La instancia EC2 debe detenerse
+cuando termine la demostración si no se necesita mantener la API disponible.
 
 ## Validación
 
