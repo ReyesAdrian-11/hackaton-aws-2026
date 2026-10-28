@@ -1,50 +1,52 @@
-# Diseño del frontend de Spookython
+# Diseño del modo táctico de Spookython
 
-## Objetivo
+## Contexto y objetivo
 
-Crear la experiencia visual del simulador de evacuación en Manta, manteniendo el backend y `simulador.py` como fuentes de verdad. El frontend debe comunicar la emergencia y permitir observar cómo evoluciona la partida; no será un juego de acciones manuales ni implementará una segunda versión de las reglas.
+Spookython simula la evacuación de Manta ante una emergencia zombie. FastAPI recomienda el siguiente movimiento; el simulador mantiene el estado real de la partida; React observa la API y renderiza los datos, sin generar posiciones ni reglas localmente.
 
-## Alcance y flujo
+La documentación del estado actual es la referencia de producto y restricciones: turnos de dos segundos, cuatro zonas y refugios configurados, cuatro tipos de zombis y problemas de latencia al escalar a 200 sobrevivientes. La Ronda 1 será más pequeña para ofrecer una demo interactiva sin confundirla con los resultados de rendimiento de las rondas mayores.
 
-La aplicación React + Vite tendrá dos pantallas:
+## Experiencia de usuario
 
-1. **Portada:** contexto de la emergencia en Manta, presentación visual y acceso a la demo. No se simulará un inicio de sesión real porque la API no tiene autenticación de usuarios. El acceso demo abrirá directamente el tablero.
-2. **Tablero:** mapa protagonista de la ciudad y navegación superior con secciones seleccionables. La sección de información de emergencia se ubicará en la parte superior; su contenido cambiará según la selección. Secciones iniciales: panorama, amenazas, refugios y zonas. El mapa ocupará el resto del espacio y se adaptará a pantallas pequeñas sin quedar oculto por el panel.
+La portada contextual mantiene el acceso de demo; el formulario de operador es visual mientras no exista autenticación de usuarios. Al elegir demo, el servidor inicia la Ronda 1 y abre el tablero cuando la API confirma el inicio.
 
-La dirección visual será propia, oscura y legible, con jerarquía clara de calles y alertas. Se tomará la imagen de referencia como guía de densidad y contexto, no como una plantilla para copiar. No se crearán imágenes generadas para representar Manta.
+Durante el juego, el mapa táctico ocupa todo el viewport. La vista no conserva encabezados, estadísticas ni paneles informativos permanentes. Un único botón flotante de ajustes abre un panel plegable que muestra información técnica del estado y controles discretos de visualización. Los sprites existentes representan a sobrevivientes, caminantes, corredores, hordas y refugios. Las capas vectoriales de calles usan geometrías del grafo real. Los marcadores y líneas solo se dibujan a partir de datos publicados por el servidor; el frontend no inventa eventos ni trayectorias.
 
-## Mapa y datos geográficos
+## Ronda 1
 
-Se usará un mapa vectorial dibujado desde el grafo GraphML incluido en el repositorio, sin depender de un proveedor externo de mosaicos. Se verificó que el grafo tiene 6.769 nodos, 18.207 aristas y geometrías `LineString` en las aristas. El mapa debe preservar proporciones geográficas, usar niveles de zoom y grosores jerárquicos para las vías, y distinguir actores, refugios y bloqueos sin saturar la vista.
+- 20 sobrevivientes y 10 caminantes, que corresponden a los valores predeterminados existentes de `construir_simulador`.
+- Posiciones obtenidas de los nodos de las cuatro zonas iniciales y del grafo GraphML real.
+- Los cuatro refugios fijos se cargan de `refugios.json`.
+- Seed reproducible, turnos de dos segundos y un máximo de 150 turnos.
+- Final anticipado cuando todos los sobrevivientes están rescatados o mordidos.
+- El servidor conserva los resultados finales por sobreviviente; el contrato actual solo expone actores activos y se ampliará de forma compatible.
 
-El endpoint `GET /mapa` entrega actualmente los puntos de los nodos, pero no las geometrías de las calles. Se ampliará de forma compatible para incluir las aristas como geometrías GeoJSON con sus nodos extremos, conservando el `metadata` y los puntos actuales. Los bloqueos de `GET /estado` se asociarán a esos extremos. Los actores y refugios se ubicarán a partir de sus nodos y las coordenadas del grafo.
+La ronda debe validar los eventos contra el grafo cargado: el análisis actual ya señala que los IDs de eventos de ejemplo necesitan validación y uno de los eventos no coincide con una arista del grafo actual.
 
-## Integración y estados
+## Arquitectura y contrato
 
-- Al entrar al tablero, consultar `GET /mapa` una vez y `GET /estado` periódicamente (objetivo inicial: cada 2 segundos).
-- Mantener en el navegador la última respuesta válida; si falla una consulta, indicar que los datos están desactualizados y mostrar el error de conexión, sin reemplazar el estado por una partida vacía.
-- No llamar a `POST /paso`: el simulador ya solicita recomendaciones y ejecuta los movimientos.
-- Derivar recuentos y resúmenes únicamente de campos presentes en `EstadoMundo`. No presentar como reales mensajes o historial de eventos que la API no expone.
-- El historial textual de eventos requerirá una ampliación posterior del contrato de API.
-- Configurar el acceso del frontend a la API por URL de entorno y permitir el origen de desarrollo de forma explícita, sin exponer claves secretas en el navegador.
+FastAPI será propietario de una única sesión global de demo y de su tarea de fondo. `POST /simulacion/demo` inicia idempotentemente la ronda o devuelve el turno de la sesión activa. `GET /estado` seguirá sirviendo de fuente visual y publicará turno, actores activos y resueltos, refugios ocupados, calles bloqueadas y próximo nodo recomendado real. `POST /paso` conservará su autenticación `x-api-key` y su respuesta `siguienteNodo`; la decisión se comprobará como arista existente, no bloqueada y segura. `GET /mapa` conserva `metadata` y nodos, y expone geometrías de calles, zonas y refugios.
 
-## Componentes principales
+El simulador se ejecutará dentro del proceso backend y reutilizará sus reglas; no se iniciará un proceso arbitrario ni se confiará en una tercera terminal. El cliente del simulador se reutilizará entre turnos para no repetir conexiones HTTP, una mejora coherente con la limitación de rendimiento documentada. Una llamada de demo concurrente no creará partidas superpuestas. Si el inicio o una actualización falla, el frontend informa el error y conserva la última respuesta válida.
 
-- `LandingPage`: contexto de la emergencia y navegación a demo.
-- `SimulationPage`: carga inicial, sondeo del estado y disposición del tablero.
-- `EmergencyNavigation`: selector superior de sección.
-- `EmergencyInfoPanel`: información contextual de la sección activa.
-- `MantaGraphMap`: calles vectoriales, nodos y marcadores de actores, refugios y bloqueos.
-- `ConnectionStatus`: estado de carga, error y antigüedad de los datos.
+## Interfaz y datos
 
-La interfaz no incluirá controles para mover sobrevivientes ni cálculos locales de rutas. La lógica permanece en `main.py`, `routing.py` y `simulador.py`.
+- `LandingPage`: contexto de Manta y acceso demo.
+- `TacticalMap`: mapa SVG/vectorial de viewport completo y marcadores vivos.
+- `FloatingSettings`: botón y panel plegable para estado, amenazas, refugios, zonas, ronda y conexión.
+- `ConnectionStatus`: estado del polling y antigüedad de los datos.
+- El mapa se carga una vez desde `GET /mapa`; `GET /estado` se consulta cada dos segundos.
+- React nunca publica el estado inicial de la partida ni calcula decisiones de ruta.
+- Las líneas de planificación se dibujan únicamente si el backend proporciona el siguiente paso decidido o una ruta calculada real.
 
 ## Validación de aceptación
 
-1. La portada muestra el contexto de la emergencia y abre la demo sin credenciales.
-2. El tablero dibuja la red real del GraphML y coloca nodos, actores y refugios desde la API.
-3. Las calles bloqueadas y las secciones superiores se actualizan con los datos recibidos.
-4. Cambiar de sección cambia la información superior y no inventa eventos que no vengan de la API.
-5. Si la API falla, se conserva la última respuesta y se informa el problema.
-6. El mapa y el panel siguen siendo utilizables en escritorio y móvil.
-7. El backend conserva el formato y los metadatos actuales de `GET /mapa`, y sus pruebas verifican las nuevas geometrías de aristas.
+1. Entrar a demo inicia en el servidor una única Ronda 1; no requiere terminal de simulador aparte.
+2. El turno inicial contiene 20 sobrevivientes y 10 caminantes distribuidos desde las zonas y el grafo reales.
+3. La ronda avanza en turnos de dos segundos y acaba al resolver a todos los sobrevivientes o al alcanzar el límite.
+4. `GET /estado` refleja posiciones y resultados publicados por el motor; sus marcadores coinciden con la UI.
+5. Las decisiones de `/paso` mantienen autenticación y no recomiendan un tramo inexistente o bloqueado.
+6. El mapa ocupa la pantalla y solo tiene un acceso flotante a ajustes; el panel se puede abrir/cerrar y funciona en móvil.
+7. El frontend muestra error en caso de desconexión y conserva la última respuesta válida.
+8. Las pruebas incluyen inicio idempotente, fin de ronda, movimientos, resultados, API y carga de mapa.
+9. Medir latencia a tamaños de Ronda 1 y cargas documentadas; no afirmar una garantía de 500 ms sin medirla bajo carga.
