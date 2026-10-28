@@ -8,6 +8,23 @@ import networkx as nx
 _BASE_NEXT: dict[tuple[int, str], dict[str, str]] = {}
 _BASE_DISTANCE: dict[tuple[int, str], dict[str, float]] = {}
 
+# Velocidades medias para convertir la longitud de una calle en tiempo de
+# recorrido. Los nombres cubren los tipos del contrato y las etiquetas OSM
+# presentes en manta_grafo.graphml.
+STREET_SPEED_KMH: dict[str, float] = {
+    "puente": 35.0,
+    "trunk": 70.0,
+    "primary": 50.0,
+    "secondary": 40.0,
+    "tertiary": 35.0,
+    "residential": 30.0,
+    "unclassified": 25.0,
+    "living_street": 15.0,
+    "service": 15.0,
+    "path": 8.0,
+    "footway": 5.0,
+}
+
 
 def blocked_edges(edges: Iterable[list[str]]) -> set[frozenset[str]]:
     return {frozenset(edge) for edge in edges if len(edge) == 2}
@@ -29,6 +46,18 @@ def danger_nodes(graph: nx.Graph, zombies: list[Any]) -> set[str]:
     return danger
 
 
+def _street_type(data: dict[str, Any]) -> str:
+    if str(data.get("bridge", "")).lower() in {"true", "yes", "1"}:
+        return "puente"
+    value = data.get("tipo", data.get("highway", "unclassified"))
+    if isinstance(value, (list, tuple)):
+        value = value[0] if value else "unclassified"
+    value = str(value).lower().split(",")[0].strip()
+    if value.endswith("_link"):
+        value = value.removesuffix("_link")
+    return value
+
+
 def _weight(_u: str, _v: str, data: dict[str, Any]) -> float:
     # GraphML/OSMnx suele guardar length como string después de serializar.
     # En MultiDiGraph, NetworkX entrega un diccionario de claves de arista.
@@ -36,9 +65,11 @@ def _weight(_u: str, _v: str, data: dict[str, Any]) -> float:
         return min(_weight(_u, _v, attrs) for attrs in data.values())
     value = data.get("length", data.get("distancia_m", 1))
     try:
-        return float(value)
+        distance_m = float(value)
     except (TypeError, ValueError):
-        return 1.0
+        distance_m = 1.0
+    speed_kmh = STREET_SPEED_KMH.get(_street_type(data), 25.0)
+    return distance_m / (speed_kmh / 3.6)
 
 
 def _edge_weight_factory(forbidden: set[str], blocked: set[frozenset[str]]):

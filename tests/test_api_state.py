@@ -92,6 +92,36 @@ def test_full_assigned_refuge_redirects_survivor_to_available_nearest_refuge(mon
     assert response["destinos"] == {"S-1": "R-002"}
 
 
+def test_prepare_decisions_reserves_refuge_capacity(monkeypatch):
+    graph = nx.MultiDiGraph()
+    graph.add_edge("N-0000", "N-0001", length=1)
+    graph.add_edge("N-0001", "N-0002", length=1)
+    graph.add_edge("N-0000", "N-0003", length=1)
+    graph.add_edge("N-0003", "N-0004", length=1)
+
+    class StaticGraphManager:
+        def game_graph(self):
+            return graph
+
+    world = EstadoMundo(
+        turno=3,
+        sobrevivientes=[
+            Sobreviviente(id="S-1", nodo="N-0000", refugio="R-001"),
+            Sobreviviente(id="S-2", nodo="N-0000", refugio="R-001"),
+        ],
+        refugios=[
+            Refugio(id="R-001", nodo="N-0002", capacidad=1, ocupados=0),
+            Refugio(id="R-002", nodo="N-0004", capacidad=5, ocupados=0),
+        ],
+    )
+    monkeypatch.setattr("main.graphs", StaticGraphManager())
+
+    main.prepare_decisions(world)
+
+    assert main._targets[(3, "S-1")] == "R-001"
+    assert main._targets[(3, "S-2")] == "R-002"
+
+
 def test_start_demo_resets_completed_world_and_route_cache(monkeypatch):
     class MutableStore:
         def __init__(self):
