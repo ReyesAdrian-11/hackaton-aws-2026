@@ -12,7 +12,9 @@ import {
   useMap,
 } from 'react-leaflet'
 import bittenArtwork from '../../images/mordido.png'
+import obstacleArtwork from '../../images/obstaculo.png'
 import hordeArtwork from '../../images/hordas.png'
+import sleeperArtwork from '../../images/dormido.png'
 import refugeArtwork from '../../images/refugio.png'
 import runnerArtwork from '../../images/corredor.png'
 import survivorArtwork from '../../images/sobreviviente.png'
@@ -21,61 +23,53 @@ import type { InitialZone, MapResponse, Refuge, SimulationEvent, Survivor, World
 
 const TILE_URL = 'https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png'
 const ICON_SIZE = 30
-const zombieArtwork: Record<Zombie['tipo'], string> = {
-  caminante: walkerArtwork,
-  corredor: runnerArtwork,
-  horda: hordeArtwork,
-  dormido: walkerArtwork,
+const actorBadges: Record<Zombie['tipo'], string> = {
+  caminante: 'C',
+  corredor: 'R',
+  horda: 'H',
+  dormido: 'D',
 }
 
-const survivorIcon = L.icon({
-  iconUrl: survivorArtwork,
-  iconSize: [ICON_SIZE, ICON_SIZE],
-  iconAnchor: [ICON_SIZE / 2, ICON_SIZE / 2],
-  className: 'actor-icon actor-icon-survivor',
-})
-const bittenIcon = L.icon({
-  iconUrl: bittenArtwork,
-  iconSize: [ICON_SIZE, ICON_SIZE],
-  iconAnchor: [ICON_SIZE / 2, ICON_SIZE / 2],
-  className: 'actor-icon actor-icon-bitten',
-})
-const refugeIcon = L.icon({
-  iconUrl: refugeArtwork,
-  iconSize: [36, 36],
-  iconAnchor: [18, 18],
-  className: 'actor-icon actor-icon-refuge',
-})
-const zombieIcons: Record<Zombie['tipo'], L.Icon> = {
-  caminante: L.icon({
-    iconUrl: zombieArtwork.caminante,
-    iconSize: [ICON_SIZE, ICON_SIZE],
-    iconAnchor: [ICON_SIZE / 2, ICON_SIZE / 2],
-    className: 'actor-icon actor-icon-walker',
-  }),
-  corredor: L.icon({
-    iconUrl: zombieArtwork.corredor,
-    iconSize: [ICON_SIZE, ICON_SIZE],
-    iconAnchor: [ICON_SIZE / 2, ICON_SIZE / 2],
-    className: 'actor-icon actor-icon-runner',
-  }),
-  horda: L.icon({
-    iconUrl: zombieArtwork.horda,
-    iconSize: [ICON_SIZE * 1.55, ICON_SIZE * 1.55],
-    iconAnchor: [ICON_SIZE * 0.775, ICON_SIZE * 0.775],
-    className: 'actor-icon actor-icon-horde',
-  }),
-  dormido: L.icon({
-    iconUrl: zombieArtwork.dormido,
-    iconSize: [ICON_SIZE, ICON_SIZE],
-    iconAnchor: [ICON_SIZE / 2, ICON_SIZE / 2],
-    className: 'actor-icon actor-icon-sleeper',
-  }),
+function actorMarkerIcon(artwork: string, badge: string, className: string, size = ICON_SIZE): L.DivIcon {
+  const dimension = size + 12
+  return L.divIcon({
+    className: 'actor-marker-leaflet',
+    html: `<span class="actor-marker actor-marker-${className}"><b>${badge}</b><img src="${artwork}" alt="" /></span>`,
+    iconSize: [dimension, dimension],
+    iconAnchor: [dimension / 2, dimension / 2],
+  })
 }
+
+const survivorMarkerIcon = actorMarkerIcon(survivorArtwork, 'S', 'survivor')
+const bittenMarkerIcon = actorMarkerIcon(bittenArtwork, 'M', 'bitten')
+const zombieMarkerIcons: Record<Zombie['tipo'], L.DivIcon> = {
+  caminante: actorMarkerIcon(walkerArtwork, actorBadges.caminante, 'walker'),
+  corredor: actorMarkerIcon(runnerArtwork, actorBadges.corredor, 'runner'),
+  horda: actorMarkerIcon(hordeArtwork, actorBadges.horda, 'horde', ICON_SIZE * 1.35),
+  dormido: actorMarkerIcon(sleeperArtwork, actorBadges.dormido, 'sleeper'),
+}
+
+function refugeMarkerIcon(occupied: number, capacity: number): L.DivIcon {
+  const full = occupied >= capacity
+  return L.divIcon({
+    className: 'refuge-marker-leaflet',
+    html: `<span class="refuge-marker ${full ? 'refuge-marker-full' : ''}"><img src="${refugeArtwork}" alt="" /><b>${occupied}/${capacity}</b>${full ? '<i>LLENO</i>' : ''}</span>`,
+    iconSize: [58, 52],
+    iconAnchor: [29, 26],
+  })
+}
+
+const obstacleMarkerIcon = L.divIcon({
+  className: 'obstacle-marker-leaflet',
+  html: `<span class="obstacle-marker"><img src="${obstacleArtwork}" alt="" /><b>VÍA CERRADA</b></span>`,
+  iconSize: [74, 42],
+  iconAnchor: [37, 21],
+})
 
 interface MapCanvasProps {
   map: MapResponse | null
   state: WorldState | null
+  lastRoutes: ReadonlyMap<string, { round: number; nodes: string[] }>
   stateError: string | null
   loading: boolean
   error: string | null
@@ -120,7 +114,7 @@ function AnimatedActorMarker({
 }: {
   positions: LatLngExpression[]
   turn: number
-  icon: L.Icon
+  icon: L.Icon | L.DivIcon
   title: string
 }) {
   const marker = useRef<LeafletMarker>(null)
@@ -194,7 +188,7 @@ function eventTime(turn: number): string {
   return `T${String(turn).padStart(3, '0')}`
 }
 
-export function MapCanvas({ map, state, stateError, loading, error, onRetry }: MapCanvasProps) {
+export function MapCanvas({ map, state, lastRoutes, stateError, loading, error, onRetry }: MapCanvasProps) {
   const [tileError, setTileError] = useState(false)
 
   const nodePositions = useMemo(() => {
@@ -217,11 +211,17 @@ export function MapCanvas({ map, state, stateError, loading, error, onRetry }: M
     return firstNode ? toLatLng(firstNode as [number, number]) : null
   }, [map])
 
-  const blockedSegments = (state?.aristasBloqueadas ?? []).flatMap((edge) => {
+  const blockedRoads = (state?.aristasBloqueadas ?? []).flatMap((edge) => {
     if (edge.length !== 2) return []
     const source = nodePositions.get(edge[0])
     const target = nodePositions.get(edge[1])
-    return source && target ? [[toLatLng(source), toLatLng(target)] as LatLngExpression[]] : []
+    return source && target
+      ? [{
+          edge,
+          coordinates: [toLatLng(source), toLatLng(target)] as LatLngExpression[],
+          midpoint: toLatLng([(source[0] + target[0]) / 2, (source[1] + target[1]) / 2]),
+        }]
+      : []
   })
 
   const visibleZombies = (state?.zombies ?? []).filter((zombie) => zombie.visible)
@@ -258,14 +258,26 @@ export function MapCanvas({ map, state, stateError, loading, error, onRetry }: M
       : `Nodo ${event.nodo}`
   }
   const routes = (state?.sobrevivientes ?? []).flatMap((survivor) => {
-    if (!survivor.activo || survivor.ruta.length < 2) return []
-    const coordinates = survivor.ruta.flatMap((node) => {
+    if (!survivor.activo) return []
+    const currentRoute = survivor.ruta.length > 1
+      ? survivor.ruta
+      : lastRoutes.get(survivor.id)?.round === state?.ronda
+        ? lastRoutes.get(survivor.id)?.nodes ?? []
+        : []
+    if (currentRoute.length < 2) return []
+    const stale = survivor.ruta.length < 2
+    const routeStart = currentRoute.indexOf(survivor.nodo)
+    const routeNodes = stale && routeStart >= 0 ? currentRoute.slice(routeStart) : currentRoute
+    const coordinates = routeNodes.flatMap((node) => {
       const coordinate = nodePositions.get(node)
       return coordinate ? [toLatLng(coordinate)] : []
     })
-    return coordinates.length > 1 ? [{ id: survivor.id, coordinates }] : []
+    return coordinates.length > 1 ? [{ id: survivor.id, coordinates, stale }] : []
   })
-  const recentEvents = [...(state?.eventos ?? [])].reverse().slice(0, 4)
+  const recentEvents = [...(state?.eventos ?? [])]
+    .map((event, index) => ({ event, index }))
+    .sort((first, second) => second.event.turno - first.event.turno || second.index - first.index)
+    .map(({ event }) => event)
 
   if (loading) {
     return (
@@ -329,18 +341,18 @@ export function MapCanvas({ map, state, stateError, loading, error, onRetry }: M
               key={route.id}
               positions={route.coordinates}
               pathOptions={{
-                className: 'route-plan-flow',
-                color: '#65e9c3',
-                opacity: 0.28,
-                weight: 3,
-                dashArray: '5 8',
+                className: route.stale ? 'route-plan-stale' : 'route-plan-flow',
+                color: route.stale ? '#e5b45e' : '#65e9c3',
+                opacity: route.stale ? 0.4 : 0.72,
+                weight: route.stale ? 2 : 4,
+                dashArray: route.stale ? '4 8' : '8 5',
               }}
             />
           ))}
-          {blockedSegments.map((segment, index) => (
+          {blockedRoads.map((road) => (
             <Polyline
-              key={`${state?.turno ?? 0}-blocked-${index}`}
-              positions={segment}
+              key={`${road.edge[0]}-${road.edge[1]}`}
+              positions={road.coordinates}
               pathOptions={{
                 className: 'blocked-road-pulse',
                 color: '#ff625d',
@@ -360,15 +372,26 @@ export function MapCanvas({ map, state, stateError, loading, error, onRetry }: M
               <Marker
                 key={refuge.id}
                 position={toLatLng(coordinate)}
-                icon={refugeIcon}
+                icon={refugeMarkerIcon(refuge.ocupados, refuge.capacidad)}
                 title={refugeLabel(refuge)}
               >
                 <Tooltip direction="top">
-                  {`${refugeLabel(refuge)} · ${refuge.ocupados}/${refuge.capacidad} personas`}
+                  {`${refugeLabel(refuge)} · ${refuge.ocupados}/${refuge.capacidad} personas${refuge.ocupados >= refuge.capacidad ? ' · LLENO' : ''}`}
                 </Tooltip>
               </Marker>
             )
           })}
+
+          {blockedRoads.map((road) => (
+            <Marker
+              key={`blocked-${road.edge[0]}-${road.edge[1]}`}
+              position={road.midpoint}
+              icon={obstacleMarkerIcon}
+              title={`Vía bloqueada: ${road.edge[0]} ↔ ${road.edge[1]}`}
+            >
+              <Tooltip direction="top">{`Calle bloqueada · ${road.edge[0]} ↔ ${road.edge[1]}`}</Tooltip>
+            </Marker>
+          ))}
 
           {visibleZombies.map((zombie) => {
             const current = nodePositions.get(zombie.nodo)
@@ -382,7 +405,7 @@ export function MapCanvas({ map, state, stateError, loading, error, onRetry }: M
                 key={zombie.id}
                 positions={trajectory.length > 1 ? trajectory : [toLatLng(current)]}
                 turn={state?.turno ?? 0}
-                icon={zombieIcons[zombie.tipo]}
+                icon={zombieMarkerIcons[zombie.tipo]}
                 title={`${zombie.id} · ${zombie.tipo}`}
               />
             )
@@ -395,7 +418,7 @@ export function MapCanvas({ map, state, stateError, loading, error, onRetry }: M
               const coordinate = nodePositions.get(node)
               return coordinate ? [toLatLng(coordinate)] : []
             })
-            const icon = survivor.resultado === 'mordido' ? bittenIcon : survivorIcon
+            const icon = survivor.resultado === 'mordido' ? bittenMarkerIcon : survivorMarkerIcon
             const status = survivor.resultado ?? (survivor.activo ? 'evacuando' : 'resuelto')
             return (
               <AnimatedActorMarker
@@ -460,6 +483,7 @@ export function MapCanvas({ map, state, stateError, loading, error, onRetry }: M
         <span><i className="legend-walker" />Zombis</span>
         <span><i className="legend-refuge" />Refugios</span>
         <span><i className="legend-route" />Rutas del backend</span>
+        <span><i className="legend-route-held" />Última ruta segura</span>
       </div>
 
       <div className="map-attribution-note">

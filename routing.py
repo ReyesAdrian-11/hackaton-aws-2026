@@ -75,6 +75,11 @@ def warm_base_trees(graph: nx.MultiDiGraph, targets: Iterable[str]) -> None:
         _base_tree(graph, target)
 
 
+def base_distances(graph: nx.MultiDiGraph, target: str) -> dict[str, float]:
+    """Distancias por calle hasta un destino para asignar el refugio alcanzable más cercano."""
+    return _base_tree(graph, target)[1]
+
+
 def safe_route_tree(
     graph: nx.MultiDiGraph,
     target: str,

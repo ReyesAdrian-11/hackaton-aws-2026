@@ -18,8 +18,12 @@ export function getWorldState(signal?: AbortSignal): Promise<WorldState> {
   return getJson<WorldState>('/estado', signal)
 }
 
-export async function startDemo(): Promise<DemoStartResponse> {
-  const response = await fetch(`${API_BASE_URL}/simulacion/demo`, { method: 'POST' })
+export async function startDemo(round = 1): Promise<DemoStartResponse> {
+  const response = await fetch(`${API_BASE_URL}/simulacion/demo`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ ronda: round }),
+  })
   if (!response.ok) {
     let detail = `La API respondió ${response.status} ${response.statusText}`.trim()
     try {

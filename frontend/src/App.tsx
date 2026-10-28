@@ -51,20 +51,84 @@ function formatTime(date: Date | null): string {
   return date.toLocaleTimeString('es-EC', { hour: '2-digit', minute: '2-digit', second: '2-digit' })
 }
 
+type CachedRoute = { round: number; nodes: string[] }
+
+function updateRouteCache(previous: Map<string, CachedRoute>, state: WorldState): Map<string, CachedRoute> {
+  const activeSurvivors = new Set(
+    state.sobrevivientes.filter((survivor) => survivor.activo).map((survivor) => survivor.id),
+  )
+  const next = new Map([...previous].filter(([, route]) => route.round === state.ronda))
+  let changed = next.size !== previous.size
+  for (const [id] of next) {
+    if (!activeSurvivors.has(id)) {
+      next.delete(id)
+      changed = true
+    }
+  }
+  for (const survivor of state.sobrevivientes) {
+    if (!survivor.activo || survivor.ruta.length < 2) continue
+    const previousRoute = next.get(survivor.id)
+    const sameRoute = previousRoute?.nodes.length === survivor.ruta.length
+      && previousRoute.nodes.every((node, index) => node === survivor.ruta[index])
+    if (!sameRoute) {
+      next.set(survivor.id, { round: state.ronda, nodes: survivor.ruta })
+      changed = true
+    }
+  }
+  return changed ? next : previous
+}
+
 function useSimulationData() {
   const [map, setMap] = useState<MapResponse | null>(null)
   const [state, setState] = useState<WorldState | null>(null)
+  const [lastRoutes, setLastRoutes] = useState<Map<string, CachedRoute>>(() => new Map())
   const [mapError, setMapError] = useState<string | null>(null)
   const [stateError, setStateError] = useState<string | null>(null)
   const [mapLoading, setMapLoading] = useState(true)
   const [stateLoading, setStateLoading] = useState(true)
   const [lastUpdated, setLastUpdated] = useState<Date | null>(null)
-  const stateRequestActive = useRef(false)
   const mounted = useRef(true)
+  const stateRefresh = useRef<(() => Promise<void>) | null>(null)
+  const refreshState = useCallback(() => {
+    void stateRefresh.current?.()
+  }, [])
 
   useEffect(() => {
     mounted.current = true
     const controller = new AbortController()
+    let requestActive = false
+    let refreshPending = false
+    const refresh = async () => {
+      if (controller.signal.aborted) return
+      if (requestActive) {
+        refreshPending = true
+        return
+      }
+
+      requestActive = true
+      try {
+        const result = await getWorldState(controller.signal)
+        if (mounted.current) {
+          setState(result)
+          setLastRoutes((previous) => updateRouteCache(previous, result))
+          setStateError(null)
+          setStateLoading(false)
+          setLastUpdated(new Date())
+        }
+      } catch (error) {
+        if (!controller.signal.aborted && mounted.current) {
+          setStateError(errorMessage(error))
+          setStateLoading(false)
+        }
+      } finally {
+        requestActive = false
+        if (refreshPending && mounted.current && !controller.signal.aborted) {
+          refreshPending = false
+          void refresh()
+        }
+      }
+    }
+    stateRefresh.current = refresh
     void getMap(controller.signal)
       .then((result) => {
         if (mounted.current) setMap(result)
@@ -76,31 +140,11 @@ function useSimulationData() {
         if (!controller.signal.aborted && mounted.current) setMapLoading(false)
       })
 
-    const refreshState = async () => {
-      if (stateRequestActive.current) return
-      stateRequestActive.current = true
-      try {
-        const result = await getWorldState(controller.signal)
-        if (mounted.current) {
-          setState(result)
-          setStateError(null)
-          setStateLoading(false)
-          setLastUpdated(new Date())
-        }
-      } catch (error) {
-        if (!controller.signal.aborted && mounted.current) {
-          setStateError(errorMessage(error))
-          setStateLoading(false)
-        }
-      } finally {
-        stateRequestActive.current = false
-      }
-    }
-
-    void refreshState()
-    const timer = window.setInterval(() => void refreshState(), 500)
+    void refresh()
+    const timer = window.setInterval(() => void refresh(), 500)
     return () => {
       mounted.current = false
+      if (stateRefresh.current === refresh) stateRefresh.current = null
       controller.abort()
       window.clearInterval(timer)
     }
@@ -121,7 +165,7 @@ function useSimulationData() {
       })
   }, [])
 
-  return { map, state, mapError, stateError, mapLoading, stateLoading, lastUpdated, retryMap }
+  return { map, state, lastRoutes, mapError, stateError, mapLoading, stateLoading, lastUpdated, retryMap, refreshState }
 }
 
 function LandingPage({
@@ -246,6 +290,20 @@ function SectionDetails({
   const survivors = (state?.sobrevivientes ?? []).filter((survivor) => survivor.activo)
   const capacity = refugesSummary(state)
   const blockedEdges = (state?.aristasBloqueadas ?? []).filter((edge) => edge.length === 2)
+  const nodeCoordinates = new Map(
+    (map?.grafo.features ?? []).map((feature) => [
+      feature.properties.id,
+      feature.geometry.coordinates as [number, number],
+    ]),
+  )
+
+  const isNodeInZone = (node: string, zone: InitialZone) => {
+    const coordinate = nodeCoordinates.get(node)
+    if (!coordinate) return false
+    const latitudeDistance = (zone.lat - coordinate[1]) * 111_000
+    const longitudeDistance = (zone.lng - coordinate[0]) * 111_000 * Math.cos((zone.lat * Math.PI) / 180)
+    return Math.hypot(latitudeDistance, longitudeDistance) <= zone.radioMetros
+  }
 
   if (section === 'amenazas') {
     return (
@@ -271,9 +329,14 @@ function SectionDetails({
       <div className="detail-grid detail-refuges">
         {state?.refugios.length ? state.refugios.map((refuge) => {
           const percentage = refuge.capacidad ? Math.min(100, (refuge.ocupados / refuge.capacidad) * 100) : 0
+          const full = refuge.ocupados >= refuge.capacidad
           return (
-            <div className="refuge-card" key={refuge.id}>
-              <div className="refuge-card-heading"><span><Shield size={14} />{refuge.id}</span><b>{refuge.ocupados}<small> / {refuge.capacidad}</small></b></div>
+            <div className={`refuge-card ${full ? 'refuge-card-full' : ''}`} key={refuge.id}>
+              <div className="refuge-card-heading">
+                <span><Shield size={14} />{refuge.id}</span>
+                <b>{refuge.ocupados}<small> / {refuge.capacidad}</small></b>
+                {full && <strong className="refuge-full-badge">LLENO</strong>}
+              </div>
               <strong>{refuge.nombre ?? refuge.id}</strong>
               <div className="capacity-track"><span style={{ width: `${percentage}%` }} /></div>
             </div>
@@ -286,13 +349,36 @@ function SectionDetails({
   if (section === 'zonas') {
     return (
       <div className="detail-grid detail-zones">
-        {(map?.zonas ?? []).map((zone: InitialZone, index) => (
-          <div className="zone-card" key={zone.id}>
-            <span className="zone-card-index">0{index + 1}</span>
-            <span><strong>{zone.nombre}</strong><small>Zona inicial · nodo {zone.nodoReferencia}</small></span>
-            <span className="zone-radius">{zone.radioMetros} m</span>
-          </div>
-        ))}
+        {(map?.zonas ?? []).map((zone, index) => {
+          const zoneSurvivors = (state?.sobrevivientes ?? []).filter((survivor) => isNodeInZone(survivor.nodo, zone))
+          const zoneZombies = visibleZombies.filter((zombie) => isNodeInZone(zombie.nodo, zone))
+          const zoneBlockedRoads = blockedEdges.filter((edge) => edge.some((node) => isNodeInZone(node, zone)))
+          const zoneEvents = [...(state?.eventos ?? [])]
+            .filter((event) => (
+              (event.nodo !== null && isNodeInZone(event.nodo, zone))
+              || (event.arista?.some((node) => isNodeInZone(node, zone)) ?? false)
+            ))
+            .sort((first, second) => second.turno - first.turno)
+          const latestEvent = zoneEvents[0]
+          const active = zoneSurvivors.filter((survivor) => survivor.activo).length
+          const rescued = zoneSurvivors.filter((survivor) => survivor.resultado === 'rescatado').length
+          const bitten = zoneSurvivors.filter((survivor) => survivor.resultado === 'mordido').length
+
+          return (
+            <div className="zone-card" key={zone.id}>
+              <span className="zone-card-index">0{index + 1}</span>
+              <span className="zone-card-content">
+                <strong>{zone.nombre}</strong>
+                <small>Inicial · nodo {zone.nodoReferencia} · radio {zone.radioMetros} m</small>
+                <small>{active} activos · {rescued} rescatados · {bitten} mordidos · {zoneZombies.length} amenazas</small>
+                <small>{zoneBlockedRoads.length} vías bloqueadas</small>
+                <small className="zone-latest-event">
+                  {latestEvent ? `T${latestEvent.turno}: ${latestEvent.mensaje}` : 'Sin eventos reportados'}
+                </small>
+              </span>
+            </div>
+          )
+        })}
         {!map?.zonas.length && <div className="empty-detail">Las zonas aparecerán al conectar el mapa.</div>}
       </div>
     )
@@ -304,7 +390,16 @@ function SectionDetails({
         {blockedEdges.length ? blockedEdges.map(([source, target]) => (
           <div className="blocked-edge" key={`${source}:${target}`}>
             <span className="blocked-icon"><Route size={14} /></span>
-            <span><strong>{source} <i>↔</i> {target}</strong><small>Bloqueo activo en el estado del mundo</small></span>
+            <span>
+              <strong>{source} <i>↔</i> {target}</strong>
+              <small>
+                {[...(state?.eventos ?? [])].reverse().find((event) => (
+                  event.arista?.length === 2
+                  && ((event.arista[0] === source && event.arista[1] === target)
+                    || (event.arista[0] === target && event.arista[1] === source))
+                ))?.mensaje ?? 'Bloqueo activo en el estado del mundo'}
+              </small>
+            </span>
             <BadgeAlert size={15} />
           </div>
         )) : <div className="empty-detail">No hay tramos bloqueados en el estado actual.</div>}
@@ -313,7 +408,7 @@ function SectionDetails({
   }
 
   if (section === 'eventos') {
-    const events = [...(state?.eventos ?? [])].reverse()
+    const events = [...(state?.eventos ?? [])].sort((first, second) => second.turno - first.turno)
     return (
       <div className="detail-grid detail-events">
         {events.length ? events.map((event) => (
@@ -346,23 +441,64 @@ function stateLoadingText(state: WorldState | null, count: number): string | num
 }
 
 function EmergencyBoard({ onExit }: { onExit: () => void }) {
-  const { map, state, mapError, stateError, mapLoading, stateLoading, lastUpdated, retryMap } = useSimulationData()
+  const { map, state, lastRoutes, mapError, stateError, mapLoading, stateLoading, lastUpdated, retryMap, refreshState } = useSimulationData()
   const [activeSection, setActiveSection] = useState<SectionKey>('panorama')
   const [settingsOpen, setSettingsOpen] = useState(false)
+  const [roundError, setRoundError] = useState<string | null>(null)
+  const [roundChanging, setRoundChanging] = useState(false)
+  const [selectedRound, setSelectedRound] = useState<number | null>(null)
   const currentSection = sections.find((section) => section.id === activeSection) ?? sections[0]
+  const activeRound = selectedRound ?? state?.ronda ?? 1
+  const displayedState = state?.ronda === activeRound ? state : null
   const connectionLabel = stateError
-    ? state ? 'Datos desactualizados' : 'Sin conexión'
-    : state?.simulacion === 'error'
+    ? displayedState ? 'Datos desactualizados' : 'Sin conexión'
+    : displayedState?.simulacion === 'error'
       ? 'Simulación con error'
-      : stateLoading && !state
+      : (stateLoading && !displayedState) || roundChanging
         ? 'Conectando'
-        : state?.simulacion === 'completada'
+        : displayedState?.simulacion === 'completada'
           ? 'Ronda completada'
           : 'En vivo'
 
   return (
     <main className="tactical-screen">
-      <MapCanvas map={map} state={state} stateError={stateError} loading={mapLoading} error={mapError} onRetry={retryMap} />
+      <MapCanvas map={map} state={displayedState} lastRoutes={lastRoutes} stateError={stateError} loading={mapLoading} error={mapError} onRetry={retryMap} />
+      <label className="round-selector">
+        <span>RONDA</span>
+        <select
+          aria-label="Cambiar ronda de simulación"
+          value={activeRound}
+          disabled={roundChanging}
+          onChange={(event) => {
+            const round = Number(event.currentTarget.value)
+            const previousRound = activeRound
+            setSelectedRound(round)
+            setRoundChanging(true)
+            setRoundError(null)
+            void startDemo(round)
+              .then((result) => {
+                if (result.estado === 'error') throw new Error(result.mensaje)
+                void refreshState()
+              })
+              .catch((error: unknown) => {
+                setSelectedRound(previousRound)
+                setRoundError(errorMessage(error))
+              })
+              .finally(() => setRoundChanging(false))
+          }}
+        >
+          <option value={1}>01 · Anochecer</option>
+          <option value={2}>02 · Medianoche</option>
+          <option value={3}>03 · Apocalipsis</option>
+        </select>
+      </label>
+      {state && !displayedState && (
+        <div className="round-sync-status" role="status">
+          <span className="small-loader" />
+          Sincronizando estado de la ronda {activeRound}…
+        </div>
+      )}
+      {roundError && <div className="round-error" role="alert">{roundError}</div>}
       <button
         className={`settings-toggle ${settingsOpen ? 'settings-toggle-active' : ''}`}
         type="button"
@@ -386,10 +522,10 @@ function EmergencyBoard({ onExit }: { onExit: () => void }) {
             </button>
           </div>
 
-          <div className={`settings-connection ${stateError || state?.simulacion === 'error' ? 'settings-connection-error' : ''}`}>
+          <div className={`settings-connection ${stateError || displayedState?.simulacion === 'error' ? 'settings-connection-error' : ''}`}>
             <span className="connection-indicator" />
             <span>{connectionLabel}</span>
-            <span className="settings-round">RONDA {state?.ronda ?? '—'} · TURNO {String(state?.turno ?? 0).padStart(3, '0')}</span>
+            <span className="settings-round">RONDA {displayedState?.ronda ?? activeRound} · TURNO {String(displayedState?.turno ?? 0).padStart(3, '0')}</span>
           </div>
 
           <nav className="settings-nav" aria-label="Información del simulador">
@@ -420,20 +556,21 @@ function EmergencyBoard({ onExit }: { onExit: () => void }) {
               </p>
             </div>
             {stateError && (
-              <div className={`stale-message ${state ? 'stale-message-warning' : ''}`} role="status">
+              <div className={`stale-message ${displayedState ? 'stale-message-warning' : ''}`} role="status">
                 <AlertTriangle size={15} />
-                <span>{state ? 'No se pudo actualizar. Se conserva la última respuesta válida.' : 'No se pudo conectar con la API.'}</span>
+                <span>{displayedState ? 'No se pudo actualizar. Se conserva la última respuesta válida.' : 'No se pudo conectar con la API.'}</span>
                 <small>{stateError}</small>
               </div>
             )}
-            {stateLoading && !state ? (
+            {roundError && <div className="stale-message" role="alert"><AlertTriangle size={15} /><span>{roundError}</span></div>}
+            {stateLoading && !displayedState ? (
               <div className="details-loading"><span className="small-loader" />Esperando datos del simulador…</div>
             ) : (
-              <SectionDetails section={activeSection} state={state} map={map} />
+              <SectionDetails section={activeSection} state={displayedState} map={map} />
             )}
             <div className="data-timestamp">
               <span className="data-live-dot" />
-              <span>{lastUpdated ? `Actualizado ${formatTime(lastUpdated)}` : 'Esperando primera lectura'}</span>
+              <span>{displayedState && lastUpdated ? `Actualizado ${formatTime(lastUpdated)}` : 'Esperando datos de ronda'}</span>
               <span className="timestamp-divider">·</span>
               <span>Sondeo 500 ms · turno 2 s</span>
             </div>
@@ -472,7 +609,7 @@ export default function App() {
     setStarting(true)
     setStartError(null)
     try {
-      const result = await startDemo()
+      const result = await startDemo(1)
       if (result.estado === 'error') throw new Error(result.mensaje)
       setInDemo(true)
     } catch (error) {

@@ -19,9 +19,11 @@ from models import (
     EventoSimulacion,
     PasoRequest,
     PasoResponse,
+    Refugio,
+    RondaInicioRequest,
     RondaInicioResponse,
 )
-from routing import next_safe_node, route_from_tree, safe_route_tree, warm_base_trees
+from routing import base_distances, next_safe_node, route_from_tree, safe_route_tree, warm_base_trees
 from simulation_service import SimulationService
 from world_state import store
 
@@ -31,6 +33,7 @@ graphs = GraphManager()
 simulation_service = SimulationService()
 _decisions: dict[tuple[int, str], str] = {}
 _routes: dict[tuple[int, str], list[str]] = {}
+_targets: dict[tuple[int, str], str] = {}
 _executor = ThreadPoolExecutor(max_workers=2, thread_name_prefix="decisions")
 
 
@@ -82,33 +85,45 @@ def require_edge(edge: list[str]) -> None:
         raise HTTPException(status_code=422, detail=f"La arista {edge} no existe en el grafo.")
 
 
-def survivor_target(survivor_id: str, world: EstadoMundo) -> str | None:
+def survivor_target(survivor_id: str, world: EstadoMundo) -> Refugio | None:
     survivor = next((s for s in world.sobrevivientes if s.id == survivor_id), None)
     if survivor and survivor.refugio:
         refuge = next((r for r in world.refugios if r.id == survivor.refugio), None)
         if refuge and refuge.ocupados < refuge.capacidad:
-            return refuge.nodo
+            return refuge
     available = [r for r in world.refugios if r.ocupados < r.capacidad]
-    return available[0].nodo if available else None
+    if not survivor or not available:
+        return None
+
+    graph = graphs.game_graph()
+    reachable = [
+        (distances[survivor.nodo], refuge)
+        for refuge in available
+        if (distances := base_distances(graph, refuge.nodo)).get(survivor.nodo) is not None
+    ]
+    return min(reachable, key=lambda item: item[0])[1] if reachable else None
 
 
 def prepare_decisions(world: EstadoMundo) -> None:
     """Planifica una vez por turno; /paso únicamente consulta este caché."""
-    global _decisions, _routes
+    global _decisions, _routes, _targets
 
     started = time.perf_counter()
     new_decisions: dict[tuple[int, str], str] = {}
     new_routes: dict[tuple[int, str], list[str]] = {}
+    new_targets: dict[tuple[int, str], str] = {}
     graph = graphs.game_graph()
     route_trees: dict[str, dict[str, str]] = {}
     for survivor in world.sobrevivientes:
         if not survivor.activo:
             continue
-        target = survivor_target(survivor.id, world)
-        if target is None:
+        refuge = survivor_target(survivor.id, world)
+        if refuge is None:
             new_decisions[(world.turno, survivor.id)] = survivor.nodo
             new_routes[(world.turno, survivor.id)] = [survivor.nodo]
             continue
+        target = refuge.nodo
+        new_targets[(world.turno, survivor.id)] = refuge.id
         if target not in route_trees:
             route_trees[target] = safe_route_tree(
                 graph,
@@ -137,6 +152,7 @@ def prepare_decisions(world: EstadoMundo) -> None:
 
     _decisions = new_decisions
     _routes = new_routes
+    _targets = new_targets
     logger.info(
         "Decisiones preparadas: turno=%d sobrevivientes=%d duración=%.2fms",
         world.turno,
@@ -158,6 +174,7 @@ async def get_estado():
             update={
                 "siguienteNodo": _decisions.get((world.turno, survivor.id)),
                 "ruta": _routes.get((world.turno, survivor.id), []),
+                "refugio": _targets.get((world.turno, survivor.id), survivor.refugio),
             }
         )
         for survivor in world.sobrevivientes
@@ -179,20 +196,27 @@ async def get_mapa(incluir_calles: bool = True):
 
 
 @app.post("/simulacion/demo", response_model=RondaInicioResponse)
-async def start_demo():
-    current = store.get()
-    if not simulation_service.running and current.simulacion in {"completada", "error"}:
-        store.replace(initial_state())
+async def start_demo(request: RondaInicioRequest | None = None):
+    round_number = request.ronda if request else 1
+    if simulation_service.running and simulation_service.round_number == round_number:
+        result = await simulation_service.start_demo(round_number, graphs.game_graph(), app)
+    else:
+        if simulation_service.running:
+            await simulation_service.stop()
         _decisions.clear()
         _routes.clear()
-
-    result = simulation_service.start_demo(graphs.game_graph(), app)
+        _targets.clear()
+        fresh_state = initial_state().model_copy(
+            update={"ronda": round_number, "simulacion": "iniciando"}
+        )
+        store.replace(fresh_state)
+        result = await simulation_service.start_demo(round_number, graphs.game_graph(), app)
     if result["estado"] == "iniciando":
-        message = "La Ronda 1 se está preparando."
+        message = f"La Ronda {round_number} se está preparando."
     elif result["estado"] == "error":
-        message = "La Ronda 1 anterior terminó con un error. Revisa los logs del servidor."
+        message = f"La Ronda {round_number} anterior terminó con un error. Revisa los logs del servidor."
     else:
-        message = "La Ronda 1 ya está en curso."
+        message = f"La Ronda {round_number} ya está en curso."
     return RondaInicioResponse(
         ronda=int(result["ronda"]),
         turno=int(result["turno"]),
@@ -214,6 +238,11 @@ async def get_pasos(x_api_key: str | None = Header(default=None, alias="x-api-ke
         "decisiones": {
             sid: nodo
             for (turno, sid), nodo in _decisions.items()
+            if turno == turno_actual
+        },
+        "destinos": {
+            sid: target
+            for (turno, sid), target in _targets.items()
             if turno == turno_actual
         },
     }
@@ -241,11 +270,18 @@ async def paso(body: PasoRequest, x_api_key: str | None = Header(default=None, a
 
     # Fallback: calcular on-the-fly desde la posición real reportada.
     world = store.get()
-    target = survivor_target(body.sobrevivienteId, world)
-    if target is None:
+    target_id = _targets.get((body.turno, body.sobrevivienteId))
+    target_refuge = next((refuge for refuge in world.refugios if refuge.id == target_id), None)
+    if target_refuge is None:
+        target_refuge = survivor_target(body.sobrevivienteId, world)
+    if target_refuge is None:
         return PasoResponse(siguienteNodo=body.nodoActual)
     next_node = next_safe_node(
-        graphs.game_graph(), body.nodoActual, target, world.zombies, world.aristasBloqueadas
+        graphs.game_graph(),
+        body.nodoActual,
+        target_refuge.nodo,
+        world.zombies,
+        world.aristasBloqueadas,
     )
     return PasoResponse(siguienteNodo=next_node)
 
@@ -280,6 +316,8 @@ async def replace_estado(body: EstadoCargaRequest, x_api_key: str | None = Heade
 
     previous = store.get()
     previous_decisions = dict(_decisions)
+    previous_routes = dict(_routes)
+    previous_targets = dict(_targets)
     updated = store.replace(body)
     loop = asyncio.get_running_loop()
     await loop.run_in_executor(_executor, prepare_decisions, updated)
@@ -289,11 +327,7 @@ async def replace_estado(body: EstadoCargaRequest, x_api_key: str | None = Heade
         frozenset(edge) for edge in previous.aristasBloqueadas
     }
     events = [
-        *(
-            event
-            for event in previous.eventos
-            if event.id.startswith("API-DESVIO-")
-        ),
+        *(event for event in previous.eventos if event.id.startswith("API-")),
         *updated.eventos,
     ]
     if new_blocked:
@@ -302,7 +336,9 @@ async def replace_estado(body: EstadoCargaRequest, x_api_key: str | None = Heade
                 continue
             old_next = previous_decisions.get((previous.turno, survivor.id))
             new_next = _decisions.get((updated.turno, survivor.id))
-            if old_next is not None and new_next is not None and old_next != new_next:
+            old_route = previous_routes.get((previous.turno, survivor.id), [])
+            new_route = _routes.get((updated.turno, survivor.id), [])
+            if old_next is not None and new_next is not None and old_route != new_route:
                 edge = next(iter(new_blocked))
                 events.append(
                     EventoSimulacion(
@@ -315,5 +351,24 @@ async def replace_estado(body: EstadoCargaRequest, x_api_key: str | None = Heade
                         arista=list(edge),
                     )
                 )
-    updated = store.replace(updated.model_copy(update={"eventos": events[-100:]}))
+    for survivor in updated.sobrevivientes:
+        if not survivor.activo:
+            continue
+        old_target = previous_targets.get((previous.turno, survivor.id), survivor.refugio)
+        new_target = _targets.get((updated.turno, survivor.id), survivor.refugio)
+        if old_target and new_target and old_target != new_target:
+            old_refuge = next((refuge for refuge in previous.refugios if refuge.id == old_target), None)
+            if old_refuge and old_refuge.ocupados >= old_refuge.capacidad:
+                events.append(
+                    EventoSimulacion(
+                        id=f"API-REFUGIO-LLENO-{updated.turno}-{survivor.id}",
+                        turno=updated.turno,
+                        tipo="desvio",
+                        mensaje=f"{old_refuge.id} lleno; {survivor.id} redirigido a {new_target}",
+                        actores=[survivor.id, old_target, new_target],
+                        nodo=survivor.nodo,
+                    )
+                )
+    events.sort(key=lambda event: event.turno)
+    updated = store.replace(updated.model_copy(update={"eventos": events}))
     return updated

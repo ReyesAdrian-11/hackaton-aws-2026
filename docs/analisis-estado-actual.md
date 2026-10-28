@@ -59,7 +59,7 @@ Las coordenadas están en `zonas_iniciales.json` y `refugios.json`. Los nodos so
 
 Archivos: `simulador.py`, `eventos.json` y `zonas_iniciales.json`.
 
-Incluye turnos de dos segundos, caminantes, corredores, hordas, dormidos, BFS limitado para persecuciones, bloqueos de calles, mordidas por nodo y cruces contrarios, refugios, semillas reproducibles, peticiones concurrentes y métricas de rendimiento. La Ronda 1 de demo se inicia desde `POST /simulacion/demo` y se ejecuta como tarea del backend; usa 20 sobrevivientes, 10 caminantes, seed reproducible y un máximo de 150 turnos. `GET /estado` conserva los actores resueltos, los resultados, los mensajes del simulador y el siguiente nodo recomendado.
+Incluye turnos de dos segundos, caminantes, corredores, hordas, dormidos, BFS limitado para persecuciones, bloqueos de calles, mordidas por nodo y cruces contrarios, refugios, semillas reproducibles, peticiones concurrentes y métricas de rendimiento. `POST /simulacion/demo` inicia una de las tres rondas como tarea del backend: R1 tiene 20 sobrevivientes y caminantes; R2 tiene 80 sobrevivientes con caminantes, corredores, hordas y un puente colapsado; R3 tiene 200 sobrevivientes con todos los tipos, incluidos dormidos, y dos bloqueos en turnos distintos. `GET /estado` conserva los actores resueltos, los resultados, el historial de eventos del turno y el siguiente nodo recomendado.
 
 Orden de cada turno:
 
@@ -87,23 +87,24 @@ dormido.png
 sobreviviente.png
 mordido.png
 refugio.png
+obstaculo.png
 vecino.png
 ```
 
-El frontend React + Vite usa la ilustración de hordas en la portada y los sprites disponibles para los actores del mapa vial real.
+El frontend React + Vite usa la ilustración de hordas en la portada y los sprites disponibles para los actores del mapa vial real; `obstaculo.png` identifica explícitamente las calles bloqueadas.
 
 ## Frontend implementado
 
-El directorio `frontend/` contiene la portada de demo y un mapa táctico a pantalla completa con Leaflet y mosaicos de OpenStreetMap. Los mosaicos aportan contexto geográfico, mientras que los nodos, rutas, trayectos, bloqueos y refugios proceden de la API; el navegador interpola los trayectos publicados, sin inventar movimientos. El mapa permite zoom y paneo, muestra sprites legibles y rutas completas, y mantiene una franja visible con los eventos recientes emitidos por el simulador. Un botón flotante permite abrir los paneles de panorama, amenazas, refugios, zonas, vías bloqueadas y eventos. El estado se consulta cada 500 ms para reflejar turnos de dos segundos; si falla la API, conserva la última respuesta válida e indica que está desactualizada. Los mosaicos requieren Internet; si fallan, se mantienen los actores y las capas del simulador. El formulario de operador es visual: la autenticación de usuarios aún no existe en el backend.
+El directorio `frontend/` contiene la portada de demo y un mapa táctico a pantalla completa con Leaflet y mosaicos de OpenStreetMap. Los mosaicos aportan contexto geográfico, mientras que los nodos, rutas, trayectos, bloqueos, ocupación de refugios y eventos proceden de la API; el navegador interpola los trayectos publicados, sin inventar movimientos. El mapa permite zoom y paneo, diferencia los sprites de sobrevivientes, mordidos y cada tipo de zombi mediante badges, muestra refugios llenos y cierres viales explícitos, y ofrece un historial desplazable completo. Un selector inicia las rondas 1–3 mediante el backend. El botón flotante abre los paneles de panorama, amenazas, refugios, zonas, vías bloqueadas y eventos. El estado se consulta cada 500 ms para reflejar turnos de dos segundos; si falla la API, conserva la última respuesta válida e indica que está desactualizada. Los mosaicos requieren Internet; si fallan, se mantienen los actores y las capas del simulador. El formulario de operador es visual: la autenticación de usuarios aún no existe en el backend.
 
 Instrucciones para iniciar backend y frontend: [README.md](../README.md). Diseño aprobado: [2026-10-27-frontend-design.md](plans/2026-10-27-frontend-design.md).
 
 ## Pruebas
 
-Hay catorce pruebas automatizadas:
+Hay veintidós pruebas automatizadas:
 
 ```text
-14 passed
+22 passed
 ```
 
 Cubren rutas, zombies, bloqueos, caminantes, dormidos, eventos y cruces peligrosos.
@@ -156,7 +157,7 @@ La Ronda 3 funciona, pero todavía supera el objetivo de latencia. La preparaci�
 1. Reutilizar un cliente HTTP persistente durante toda la simulación.
 2. Reducir o normalizar el grafo para las necesidades del reto.
 3. Repetir la Ronda 3 y medir backend, simulador y visualización por separado.
-4. Decidir si se necesita exponer un historial de eventos en la API.
+4. Evaluar paginación del historial si el volumen en memoria crece más allá de las rondas actuales.
 5. Integrar Redis para AWS.
 6. Completar despliegue, CloudWatch, Budget y documentación.
 

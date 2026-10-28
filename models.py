@@ -72,5 +72,9 @@ class RondaInicioResponse(BaseModel):
     mensaje: str
 
 
+class RondaInicioRequest(BaseModel):
+    ronda: int = Field(default=1, ge=1, le=3)
+
+
 class EstadoCargaRequest(EstadoMundo):
     """Modelo usado solo para pruebas locales del motor."""

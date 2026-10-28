@@ -21,6 +21,7 @@ import argparse
 import asyncio
 import json
 import logging
+import math
 import random
 import time
 from dataclasses import dataclass, field
@@ -162,7 +163,6 @@ class Simulador:
         }
         self.mundo.siguiente_evento += 1
         self.mundo.eventos.append(event)
-        del self.mundo.eventos[:-100]
 
     def distancia_saltos(self, origen: str, destino: str, limite: int | None = None) -> int | None:
         if origen == destino:
@@ -403,9 +403,11 @@ class Simulador:
     def movimiento_valido(self, origen: str, destino: str) -> bool:
         return destino == origen or self.arista_disponible(origen, destino)
 
-    async def _pedir_pasos_bulk(self, client: httpx.AsyncClient) -> dict[str, str] | None:
-        """Intenta obtener todas las decisiones en 1 sola petición GET /pasos.
-        Retorna {survivor_id: next_node} o None si el endpoint no está disponible."""
+    async def _pedir_pasos_bulk(
+        self,
+        client: httpx.AsyncClient,
+    ) -> tuple[dict[str, str], dict[str, str]] | None:
+        """Obtiene decisiones y refugios asignados del turno en una petición."""
         inicio = time.perf_counter()
         try:
             response = await client.get(
@@ -419,10 +421,10 @@ class Simulador:
             decisiones: dict[str, str] = data.get("decisiones", {})
             if not decisiones:
                 return None
-            # Registrar 1 sola latencia representativa para el bulk.
             self.latencias_ms.append(elapsed)
             logger.debug("GET /pasos bulk: %.1fms %d decisiones", elapsed, len(decisiones))
-            return decisiones
+            destinos: dict[str, str] = data.get("destinos", {})
+            return decisiones, destinos
         except (httpx.HTTPError, ValueError):
             return None
 
@@ -434,10 +436,14 @@ class Simulador:
         # FAST PATH: obtener todas las decisiones en 1 sola request.
         bulk = await self._pedir_pasos_bulk(client)
         if bulk is not None:
+            decisions, destinations = bulk
             for survivor in activos:
-                destino = bulk.get(survivor.id, survivor.nodo)
-                if self.movimiento_valido(survivor.nodo, destino) and self.graph.has_node(destino):
-                    survivor.nodo = destino
+                refuge_id = destinations.get(survivor.id)
+                if refuge_id in self.mundo.refugios:
+                    survivor.refugio = refuge_id
+                next_node = decisions.get(survivor.id, survivor.nodo)
+                if self.movimiento_valido(survivor.nodo, next_node) and self.graph.has_node(next_node):
+                    survivor.nodo = next_node
             return
 
         # FALLBACK: modo individual POST /paso (compatible con backends externos).
@@ -585,6 +591,7 @@ def construir_simulador(
     args: argparse.Namespace,
     graph: nx.MultiDiGraph | None = None,
     zombies_en_zonas: bool = False,
+    ronda: int = 1,
 ) -> Simulador:
     if graph is None:
         manager = GraphManager()
@@ -595,6 +602,7 @@ def construir_simulador(
         api_url=args.api_url,
         api_key=args.api_key,
         seed=args.semilla,
+        ronda=ronda,
     )
     refuge_data = json.loads(REFUGES_PATH.read_text(encoding="utf-8"))
     refugios = [(item["id"], item["nodo"]) for item in refuge_data]
@@ -619,34 +627,64 @@ def construir_simulador(
             frontier = next_frontier
         return sorted(candidates)
 
-    zone_candidates = [zone_nodes(zone["nodoReferencia"]) for zone in zones]
-    for i in range(args.sobrevivientes):
-        zone_index = i % len(zone_candidates)
-        candidates = zone_candidates[zone_index]
-        simulator.mundo.sobrevivientes[f"S-{i + 1:04d}"] = Sobreviviente(
-            id=f"S-{i + 1:04d}",
-            nodo=candidates[(i // len(zone_candidates)) % len(candidates)],
-            refugio=refugios[i % len(refugios)][0],
+    zone_candidates: list[list[str]] = []
+    for zone in zones:
+        candidates = []
+        for node, attributes in simulator.graph.nodes(data=True):
+            try:
+                latitude = float(attributes["y"])
+                longitude = float(attributes["x"])
+            except (KeyError, TypeError, ValueError):
+                continue
+            latitude_distance = (latitude - zone["lat"]) * 111_000
+            longitude_distance = (
+                (longitude - zone["lng"])
+                * 111_000
+                * math.cos(math.radians(zone["lat"]))
+            )
+            if math.hypot(latitude_distance, longitude_distance) <= zone["radioMetros"]:
+                candidates.append(str(node))
+        zone_candidates.append(
+            sorted(candidates) if candidates else zone_nodes(zone["nodoReferencia"])
         )
+
     nodes = sorted(simulator.graph.nodes())
     cantidades = [("caminante", args.caminantes), ("corredor", args.corredores), ("horda", args.hordas), ("dormido", args.dormidos)]
-    cursor = len(nodes) // 3
+    allocated_nodes: set[str] = set()
+
+    def spawn_node(zone_index: int | None) -> str:
+        candidates = zone_candidates[zone_index] if zone_index is not None else nodes
+        available = [node for node in candidates if node not in allocated_nodes]
+        if not available:
+            available = [node for node in nodes if node not in allocated_nodes]
+        if not available:
+            logger.warning("Se agotaron los nodos únicos para distribuir las entidades.")
+            return simulator.rng.choice(candidates or nodes)
+        node = simulator.rng.choice(available)
+        allocated_nodes.add(node)
+        return node
+
     number = 1
     for tipo, cantidad in cantidades:
         for _ in range(cantidad):
             if zombies_en_zonas and zone_candidates:
-                zone = zone_candidates[(number - 1) % len(zone_candidates)]
-                node = zone[(number * 7) % len(zone)]
+                node = spawn_node((number - 1) % len(zone_candidates))
             else:
-                node = nodes[cursor % len(nodes)]
+                node = spawn_node(None)
             simulator.mundo.zombies[f"Z-{number:04d}"] = Zombie(
                 f"Z-{number:04d}",
                 tipo,
                 node,
                 visible=tipo != "dormido",
             )
-            cursor += 7
             number += 1
+    for i in range(args.sobrevivientes):
+        zone_index = i % len(zone_candidates)
+        simulator.mundo.sobrevivientes[f"S-{i + 1:04d}"] = Sobreviviente(
+            id=f"S-{i + 1:04d}",
+            nodo=spawn_node(zone_index),
+            refugio=refugios[i % len(refugios)][0],
+        )
     return simulator
 
 

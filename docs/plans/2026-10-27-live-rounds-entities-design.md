@@ -28,10 +28,10 @@ al refugio alcanzable más cercano según el grafo; el cliente solo dibuja las
 rutas publicadas. El estado de ocupación se toma de `refugios.ocupados` y
 `refugios.capacidad`, no de conteos inferidos en la interfaz.
 
-El historial estructurado se conserva durante la ronda y se consulta por cursor
-para que la UI pueda mostrar todos los eventos sin volver a descargar el
-historial completo en cada sondeo. El feed se ordena de nuevo a antiguo y
-permite desplazamiento vertical.
+El historial estructurado se conserva durante la ronda y se publica en el
+estado del mundo. La UI presenta todos los eventos en orden de turno
+descendente y permite desplazamiento vertical; se evaluará paginación si el
+volumen futuro del historial lo requiere.
 
 ## Representación visual
 
@@ -47,7 +47,7 @@ resalta cuando cambia la ruta del backend. Los refugios alcanzan estado visual
 
 - Pruebas backend de perfiles R1/R2/R3, eventos exclusivos de R2/R3, cambio de
   ronda, capacidad y selección del refugio alcanzable.
-- Pruebas de API del cursor de eventos, orden y deduplicación.
+- Pruebas del historial completo, orden y deduplicación de eventos.
 - Pruebas visuales de sprites/badges, mordidos, refugio lleno, bloqueo y
   desplazamiento del historial.
 - Verificar selector y actualización del mapa con respuesta del backend, además
