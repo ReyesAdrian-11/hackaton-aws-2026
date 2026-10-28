@@ -8,8 +8,9 @@ import time
 from contextlib import asynccontextmanager
 from concurrent.futures import ThreadPoolExecutor
 
-from fastapi import FastAPI, Header, HTTPException, status
+from fastapi import FastAPI, Header, HTTPException, Request, WebSocket, WebSocketDisconnect, status
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
 
 from config import API_KEY, FRONTEND_ORIGINS, GRAPHML_PATH, REFUGES_PATH, ZONES_PATH
 from graph_manager import GraphManager
@@ -35,6 +36,43 @@ _decisions: dict[tuple[int, str], str] = {}
 _routes: dict[tuple[int, str], list[str]] = {}
 _targets: dict[tuple[int, str], str] = {}
 _executor = ThreadPoolExecutor(max_workers=2, thread_name_prefix="decisions")
+
+
+class StateHub:
+    """In-process fan-out of snapshots for WebSocket/AppSync adapters."""
+
+    def __init__(self) -> None:
+        self._clients: set[WebSocket] = set()
+
+    async def connect(self, websocket: WebSocket) -> None:
+        await websocket.accept()
+        self._clients.add(websocket)
+
+    def disconnect(self, websocket: WebSocket) -> None:
+        self._clients.discard(websocket)
+
+    async def publish(self, state: EstadoMundo) -> None:
+        if not self._clients:
+            return
+        payload = state.model_dump(by_alias=True)
+        stale: list[WebSocket] = []
+        for websocket in tuple(self._clients):
+            try:
+                await websocket.send_json(payload)
+            except Exception:
+                stale.append(websocket)
+        for websocket in stale:
+            self.disconnect(websocket)
+
+
+state_hub = StateHub()
+PUBLIC_HTTP_ROUTES = {
+    ("GET", "/health"),
+    ("GET", "/mapa"),
+    ("GET", "/estado"),
+    ("POST", "/simulacion/demo"),
+    ("POST", "/simulacion/prueba-fuego"),
+}
 
 
 def initial_state() -> EstadoMundo:
@@ -63,8 +101,28 @@ app.add_middleware(
     CORSMiddleware,
     allow_origins=FRONTEND_ORIGINS,
     allow_methods=["GET", "POST"],
-    allow_headers=["Content-Type"],
+    allow_headers=["Content-Type", "x-api-key"],
 )
+
+
+@app.middleware("http")
+async def authenticate_requests(request: Request, call_next):
+    """Require the challenge API key on every application request.
+
+    CORS preflight is intentionally allowed to reach CORSMiddleware; the
+    actual GET/POST request still requires x-api-key. This keeps the API
+    contract secure without making browser preflight impossible.
+    """
+    if request.method != "OPTIONS" and (
+        request.method,
+        request.url.path,
+    ) not in PUBLIC_HTTP_ROUTES:
+        if request.headers.get("x-api-key") != API_KEY:
+            return JSONResponse(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                content={"detail": "API key inválida."},
+            )
+    return await call_next(request)
 
 
 def require_key(value: str | None) -> None:
@@ -182,6 +240,25 @@ async def get_estado():
     return world.model_copy(update={"sobrevivientes": survivors})
 
 
+@app.websocket("/ws/estado")
+async def websocket_estado(websocket: WebSocket):
+    """Publica snapshots completos después de cada tick de simulación."""
+    key = websocket.headers.get("x-api-key") or websocket.query_params.get("x-api-key")
+    if key != API_KEY:
+        await websocket.close(code=4401, reason="API key inválida.")
+        return
+    await state_hub.connect(websocket)
+    try:
+        current = await get_estado()
+        await websocket.send_json(current.model_dump(by_alias=True))
+        while True:
+            await websocket.receive_text()
+    except WebSocketDisconnect:
+        state_hub.disconnect(websocket)
+    except Exception:
+        state_hub.disconnect(websocket)
+
+
 @app.get("/mapa")
 async def get_mapa(incluir_calles: bool = True):
     response = {
@@ -225,6 +302,29 @@ async def start_demo(request: RondaInicioRequest | None = None):
     )
 
 
+@app.post("/simulacion/prueba-fuego", response_model=RondaInicioResponse)
+async def start_fire_test():
+    """Launch the mandatory R1 → R2 → R3 sequence, 150 ticks each."""
+    if simulation_service.running:
+        return RondaInicioResponse(
+            ronda=int(simulation_service.round_number or 1),
+            turno=store.get().turno,
+            estado="en_curso",
+            mensaje="La Prueba de Fuego ya está en curso.",
+        )
+    _decisions.clear()
+    _routes.clear()
+    _targets.clear()
+    store.replace(initial_state().model_copy(update={"simulacion": "iniciando"}))
+    result = await simulation_service.start_fire_test(graphs.game_graph(), app)
+    return RondaInicioResponse(
+        ronda=int(result["ronda"]),
+        turno=int(result["turno"]),
+        estado=result["estado"],
+        mensaje="La Prueba de Fuego R1 → R2 → R3 se está preparando.",
+    )
+
+
 @app.get("/pasos", summary="Decisiones de todos los sobrevivientes para el turno actual")
 async def get_pasos(x_api_key: str | None = Header(default=None, alias="x-api-key")):
     """Devuelve un mapa {sobrevivienteId: siguienteNodo} para todos los
@@ -260,10 +360,10 @@ async def paso(body: PasoRequest, x_api_key: str | None = Header(default=None, a
     cached = _decisions.get((body.turno, body.sobrevivienteId))
     if cached is not None:
         graph = graphs.game_graph()
-        current = store.get()
+        blocked_edges = store.get_blocked_edges()
         if cached == body.nodoActual or (
             graph.has_edge(body.nodoActual, cached)
-            and frozenset((body.nodoActual, cached)) not in current.aristasBloqueadas
+            and frozenset((body.nodoActual, cached)) not in blocked_edges
         ):
             return PasoResponse(siguienteNodo=cached)
         logger.warning("Cache miss por nodo divergente: sobreviviente=%s cache_nodo=%s actual=%s", body.sobrevivienteId, cached, body.nodoActual)
@@ -371,4 +471,5 @@ async def replace_estado(body: EstadoCargaRequest, x_api_key: str | None = Heade
                 )
     events.sort(key=lambda event: event.turno)
     updated = store.replace(updated.model_copy(update={"eventos": events}))
+    await state_hub.publish(updated)
     return updated

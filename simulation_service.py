@@ -11,6 +11,7 @@ import httpx
 import networkx as nx
 
 from config import API_KEY, BASE_DIR
+from models import EstadoMundo, Refugio
 from simulador import Evento, Simulador, cargar_eventos, construir_simulador
 from world_state import store
 
@@ -117,6 +118,73 @@ class SimulationService:
             )
             return {"ronda": round_number, "turno": 0, "estado": "iniciando"}
 
+    async def start_fire_test(self, graph: nx.MultiDiGraph, api: Any) -> dict[str, int | str]:
+        """Start R1, R2 and R3 consecutively as one fire-test session."""
+        async with self._start_lock:
+            if self.running:
+                return {
+                    "ronda": self._round or 1,
+                    "turno": store.get().turno,
+                    "estado": "en_curso",
+                }
+            self._round = 1
+            self._task = asyncio.create_task(
+                self._run_fire_test(graph, api),
+                name="spookython-fire-test",
+            )
+            return {"ronda": 1, "turno": 0, "estado": "iniciando"}
+
+    async def _run_fire_test(self, graph: nx.MultiDiGraph, api: Any) -> None:
+        previous_refugios = store.get().refugios
+        try:
+            for round_number in (1, 2, 3):
+                round_config = ROUND_CONFIGS[round_number]
+                args = argparse.Namespace(
+                    api_url="http://spookython",
+                    api_key=API_KEY,
+                    semilla=20261031 + round_number,
+                    sobrevivientes=round_config.survivors,
+                    caminantes=round_config.walkers,
+                    corredores=round_config.runners,
+                    hordas=round_config.hordes,
+                    dormidos=round_config.sleepers,
+                    turnos=DEMO_MAX_TURNS,
+                )
+                simulator = construir_simulador(
+                    args, graph=graph, zombies_en_zonas=True, ronda=round_number
+                )
+                if previous_refugios:
+                    simulator.mundo.refugios = {
+                        refuge.id: Refugio(
+                            refuge.id,
+                            refuge.nodo,
+                            refuge.capacidad,
+                            refuge.ocupados,
+                        )
+                        for refuge in previous_refugios
+                    }
+                events = [
+                    event
+                    for event in cargar_eventos(BASE_DIR / "eventos.json")
+                    if event.turno in round_config.event_turns
+                ]
+                store.replace(
+                    EstadoMundo(
+                        turno=0,
+                        ronda=round_number,
+                        simulacion="en_curso",
+                        refugios=previous_refugios,
+                    )
+                )
+                self._round = round_number
+                await self._run_round(simulator, events, api, exact_duration=True)
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            logger.exception("Falló la Prueba de Fuego.")
+            current = store.get()
+            store.replace(current.model_copy(update={"simulacion": "error"}))
+
     async def stop(self) -> None:
         if self._task is None or self._task.done():
             return
@@ -131,6 +199,7 @@ class SimulationService:
         simulator: Simulador,
         events: list[Evento],
         api: Any,
+        exact_duration: bool = False,
     ) -> None:
         transport = httpx.ASGITransport(app=api)
         limits = httpx.Limits(max_connections=250, max_keepalive_connections=250)
@@ -143,7 +212,13 @@ class SimulationService:
             try:
                 await simulator.publicar_estado(client)
                 for _ in range(DEMO_MAX_TURNS):
-                    if not any(survivor.activo for survivor in simulator.mundo.sobrevivientes.values()):
+                    if (
+                        not exact_duration
+                        and not any(
+                            survivor.activo
+                            for survivor in simulator.mundo.sobrevivientes.values()
+                        )
+                    ):
                         break
                     started = time.perf_counter()
                     await simulator.ejecutar_turno(events, client)

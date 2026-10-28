@@ -268,6 +268,8 @@ class Simulador:
             if zombie.activo and zombie.tipo == "horda":
                 bloqueados.add(zombie.nodo)
                 bloqueados.update(self.vecinos(zombie.nodo))
+                if self.graph.is_directed():
+                    bloqueados.update(str(node) for node in self.graph.predecessors(zombie.nodo))
         return bloqueados
 
     def _despertar_dormidos(self) -> None:
@@ -416,16 +418,25 @@ class Simulador:
             )
             elapsed = (time.perf_counter() - inicio) * 1000
             if response.status_code != 200:
+                self.errores_api += 1
+                return None
+            self.latencias_ms.append(elapsed)
+            if elapsed > self.timeout * 1000:
+                self.timeouts += 1
                 return None
             data = response.json()
             decisiones: dict[str, str] = data.get("decisiones", {})
             if not decisiones:
+                self.errores_api += 1
                 return None
-            self.latencias_ms.append(elapsed)
             logger.debug("GET /pasos bulk: %.1fms %d decisiones", elapsed, len(decisiones))
             destinos: dict[str, str] = data.get("destinos", {})
             return decisiones, destinos
+        except httpx.TimeoutException:
+            self.timeouts += 1
+            return None
         except (httpx.HTTPError, ValueError):
+            self.errores_api += 1
             return None
 
     async def mover_sobrevivientes(self, client: httpx.AsyncClient) -> None:
@@ -526,7 +537,10 @@ class Simulador:
                 limits=self._http_limits,
             )
             try:
-                await self._http_client.get(f"{self.api_url}/health")
+                await self._http_client.get(
+                    f"{self.api_url}/health",
+                    headers={"x-api-key": self.api_key},
+                )
             except httpx.HTTPError:
                 logger.warning("No se pudo precalentar la conexión con %s/health", self.api_url)
         return self._http_client
@@ -703,6 +717,15 @@ def crear_app_simulador(simulacion: "Simulador") -> FastAPI:
     para que el backend y el jurado puedan consultarla.
     """
     app_sim = FastAPI(title="Spookython — Simulador (fuente de verdad)", version="0.1.0")
+
+    @app_sim.middleware("http")
+    async def authenticate_simulator_requests(request, call_next):
+        if request.method != "OPTIONS" and request.headers.get("x-api-key") != simulacion.api_key:
+            return JSONResponse(
+                status_code=401,
+                content={"detail": "API key inválida."},
+            )
+        return await call_next(request)
 
     @app_sim.get("/estado")
     async def estado_simulador() -> JSONResponse:

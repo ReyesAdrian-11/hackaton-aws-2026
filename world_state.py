@@ -22,6 +22,11 @@ class WorldStore:
         """Retorna el turno actual sin deep-copy. O(1) para validación rápida."""
         return self._turno
 
+    def get_blocked_edges(self) -> set[frozenset[str]]:
+        """Retorna solo los cierres, evitando copiar actores para /paso."""
+        with self._lock:
+            return {frozenset(edge) for edge in self._state.aristasBloqueadas}
+
     def replace(self, state: EstadoMundo) -> EstadoMundo:
         with self._lock:
             self._state = state.model_copy(deep=True)

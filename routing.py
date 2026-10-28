@@ -22,6 +22,10 @@ def danger_nodes(graph: nx.Graph, zombies: list[Any]) -> set[str]:
         danger.add(zombie.nodo)
         if zombie.tipo == "horda" and graph.has_node(zombie.nodo):
             danger.update(str(node) for node in graph.neighbors(zombie.nodo))
+            # GraphML is directed because of one-way streets, but the horde
+            # rule is spatial: every immediately connected node is blocked.
+            if graph.is_directed():
+                danger.update(str(node) for node in graph.predecessors(zombie.nodo))
     return danger
 
 

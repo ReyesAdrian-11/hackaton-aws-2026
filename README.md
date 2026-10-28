@@ -44,9 +44,20 @@ Endpoints principales:
 GET  /health
 GET  /mapa
 GET  /estado
+WS   /ws/estado
 POST /simulacion/demo
+POST /simulacion/prueba-fuego
 POST /paso       (requiere x-api-key)
 ```
+
+Los endpoints de control (`POST /paso`, `GET /pasos` y `POST /estado`)
+requieren `x-api-key`; las lecturas y el inicio de demo son públicos para que
+la UI aprobada pueda entrar sin configuración adicional. El WebSocket acepta
+la clave en la cabecera `x-api-key` o en el parámetro de conexión `x-api-key`.
+La
+Prueba de Fuego ejecuta R1, R2 y R3 consecutivamente, con 150 turnos de dos
+segundos por ronda. `WS /ws/estado` envía el snapshot inicial y cada estado
+publicado por el simulador.
 
 ## Validación
 
