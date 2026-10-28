@@ -1,0 +1,34 @@
+[
+  {
+    "id": "ZONA-TARQUI",
+    "nombre": "Tarqui",
+    "nodoReferencia": "N-1980",
+    "lat": -0.9532713479951866,
+    "lng": -80.71654773184305,
+    "radioMetros": 700
+  },
+  {
+    "id": "ZONA-LOS-ESTEROS",
+    "nombre": "Los Esteros",
+    "nodoReferencia": "N-3100",
+    "lat": -0.952391275397264,
+    "lng": -80.70743142884963,
+    "radioMetros": 700
+  },
+  {
+    "id": "ZONA-BARBASQUILLO",
+    "nombre": "Barbasquillo",
+    "nodoReferencia": "N-5566",
+    "lat": -0.9466663884760679,
+    "lng": -80.74655766156492,
+    "radioMetros": 700
+  },
+  {
+    "id": "ZONA-JOCAY",
+    "nombre": "Jocay",
+    "nodoReferencia": "N-2420",
+    "lat": -0.9588931685814875,
+    "lng": -80.71497943888971,
+    "radioMetros": 700
+  }
+]
